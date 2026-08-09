@@ -81,8 +81,7 @@ func (c Config) Validate() error {
 	}
 
 	for rule, severity := range c.Rules {
-		switch rule {
-		case "complexity", "test-only-dependency", "local-replace":
+		if removedFindingType(rule) {
 			return fmt.Errorf("rule %q was removed from Gallow's repository-entropy scope", rule)
 		}
 		switch severity {
@@ -91,8 +90,22 @@ func (c Config) Validate() error {
 			return fmt.Errorf("rule %q has unsupported severity %q", rule, severity)
 		}
 	}
+	for _, matcher := range c.IgnoreFindings {
+		if removedFindingType(matcher.Type) {
+			return fmt.Errorf("ignore finding type %q was removed from Gallow's repository-entropy scope", matcher.Type)
+		}
+	}
 
 	return nil
+}
+
+func removedFindingType(findingType string) bool {
+	switch findingType {
+	case "complexity", "test-only-dependency", "local-replace":
+		return true
+	default:
+		return false
+	}
 }
 
 func DefaultPath(root string) string {

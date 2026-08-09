@@ -272,6 +272,7 @@ func TestRemovedOptionsReturnMigrationErrors(t *testing.T) {
 		want string
 	}{
 		{name: "coverage", args: []string{"--coverage", "coverage.out"}, want: `option "--coverage" was removed`},
+		{name: "single-dash coverage", args: []string{"-coverage", "coverage.out"}, want: `option "-coverage" was removed`},
 		{name: "complexity", args: []string{"--max-cyclomatic=20"}, want: `option "--max-cyclomatic" was removed`},
 		{name: "output format", args: []string{"--format", "codeclimate"}, want: `format "codeclimate" was removed`},
 	}

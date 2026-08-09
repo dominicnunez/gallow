@@ -106,6 +106,17 @@ func TestLoadExplainsRemovedRule(t *testing.T) {
 	}
 }
 
+func TestLoadExplainsRemovedIgnoreFinding(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigFile)
+	writeConfigFile(t, path, `{"ignoreFindings": [{"type": "local-replace"}]}`)
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `ignore finding type "local-replace" was removed`) {
+		t.Fatalf("Load() error = %v; want removed ignore finding migration error", err)
+	}
+}
+
 func TestLoadExplainsRemovedFormat(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, DefaultConfigFile)

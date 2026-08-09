@@ -8,7 +8,7 @@ Gallow 0.2 narrows the product to repository entropy analysis and increments the
 - `test-only-dependency`
 - `local-replace`
 
-Remove matching rule and suppression entries from configuration and automation.
+Remove matching rule and `ignoreFindings` entries from configuration and automation. Gallow returns a migration-specific error while removed IDs remain in either config section.
 
 Dependencies used only by tests continue to count as used when tests are included; they no longer produce a finding.
 

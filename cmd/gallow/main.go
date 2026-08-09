@@ -499,7 +499,7 @@ func removedCLIOption(args []string) (string, bool) {
 	for _, arg := range args {
 		option, _, _ := strings.Cut(arg, "=")
 		switch option {
-		case "--coverage", "--max-cyclomatic", "--max-cognitive":
+		case "--coverage", "-coverage", "--max-cyclomatic", "-max-cyclomatic", "--max-cognitive", "-max-cognitive":
 			return option, true
 		}
 	}
