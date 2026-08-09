@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,50 @@ func TestLoadRejectsUnknownRuleSeverity(t *testing.T) {
 	_, _, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil; want error")
+	}
+}
+
+func TestLoadExplainsRemovedHealthSettings(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigFile)
+	writeConfigFile(t, path, `{"health": {"maxCyclomatic": 20}}`)
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `setting "health" was removed`) {
+		t.Fatalf("Load() error = %v; want removed health migration error", err)
+	}
+}
+
+func TestLoadExplainsRemovedRule(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigFile)
+	writeConfigFile(t, path, `{"rules": {"complexity": "off"}}`)
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `rule "complexity" was removed`) {
+		t.Fatalf("Load() error = %v; want removed rule migration error", err)
+	}
+}
+
+func TestLoadExplainsRemovedIgnoreFinding(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigFile)
+	writeConfigFile(t, path, `{"ignoreFindings": [{"type": "local-replace"}]}`)
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `ignore finding type "local-replace" was removed`) {
+		t.Fatalf("Load() error = %v; want removed ignore finding migration error", err)
+	}
+}
+
+func TestLoadExplainsRemovedFormat(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigFile)
+	writeConfigFile(t, path, `{"format": "codeclimate"}`)
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `format "codeclimate" was removed`) {
+		t.Fatalf("Load() error = %v; want removed format migration error", err)
 	}
 }
 

@@ -11,17 +11,17 @@ go vet ./...
 go run ./cmd/gallow --root . --summary --ci
 ```
 
-Tag the first release:
+Tag the focused 0.2 release:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 After the tag is available, users can install the released CLI with:
 
 ```bash
-go install github.com/dominicnunez/gallow/cmd/gallow@v0.1.0
+go install github.com/dominicnunez/gallow/cmd/gallow@v0.2.0
 ```
 
 Future release work can add GitHub Release binaries and GoReleaser once the project needs packaged artifacts beyond `go install`.

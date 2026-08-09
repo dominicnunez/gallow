@@ -18,14 +18,13 @@ const (
 	goSumFileName     = "go.sum"
 )
 
-func moduleHygieneFindings(root string, modules []moduleState, module moduleState) ([]Finding, error) {
+func moduleHygieneFindings(root string, module moduleState) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	tidyFindings, err := tidyDriftFindings(root, module)
 	if err != nil {
 		return nil, err
 	}
 	findings = append(findings, tidyFindings...)
-	findings = append(findings, localReplaceFindings(root, modules, module)...)
 	findings = append(findings, unresolvedToolDependencyFindings(root, module)...)
 	return findings, nil
 }
@@ -50,6 +49,9 @@ func tidyDriftFindings(root string, module moduleState) ([]Finding, error) {
 		}
 		return nil, fmt.Errorf("go mod tidy -diff %s: %s", module.report.Dir, message)
 	}
+	if !tidyDiffHasSemanticChanges(stdout.String()) {
+		return nil, nil
+	}
 
 	changedFiles := tidyDiffFiles(root, module.absDir, stdout.String())
 	if len(changedFiles) == 0 {
@@ -73,6 +75,32 @@ func tidyDriftFindings(root string, module moduleState) ([]Finding, error) {
 	}}, nil
 }
 
+func tidyDiffHasSemanticChanges(diff string) bool {
+	var removed []string
+	var added []string
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+			continue
+		case strings.HasPrefix(line, "-"):
+			removed = append(removed, strings.TrimSuffix(line[1:], "\r"))
+		case strings.HasPrefix(line, "+"):
+			added = append(added, strings.TrimSuffix(line[1:], "\r"))
+		}
+	}
+
+	if len(removed) != len(added) {
+		return true
+	}
+	for i := range removed {
+		if removed[i] != added[i] {
+			return true
+		}
+	}
+
+	return false
+}
+
 func tidyDiffFiles(root string, moduleDir string, diff string) []string {
 	seen := make(map[string]struct{})
 	for _, line := range strings.Split(diff, "\n") {
@@ -93,44 +121,6 @@ func tidyDiffFiles(root string, moduleDir string, diff string) []string {
 	}
 	sort.Strings(files)
 	return files
-}
-
-func localReplaceFindings(root string, modules []moduleState, module moduleState) []Finding {
-	parsed, err := parseGoMod(filepath.Join(module.absDir, goModFileName))
-	if err != nil {
-		return nil
-	}
-
-	moduleDirs := make(map[string]struct{}, len(modules))
-	for _, known := range modules {
-		moduleDirs[filepath.Clean(known.absDir)] = struct{}{}
-	}
-
-	findings := make([]Finding, 0)
-	for _, replace := range parsed.Replace {
-		if !isLocalReplacePath(replace.New.Path) {
-			continue
-		}
-
-		resolved := replace.New.Path
-		if !filepath.IsAbs(resolved) {
-			resolved = filepath.Join(module.absDir, resolved)
-		}
-		resolved = filepath.Clean(resolved)
-		if _, ok := moduleDirs[resolved]; ok {
-			continue
-		}
-
-		findings = append(findings, Finding{
-			Type:       FindingLocalReplace,
-			Module:     replace.Old.Path,
-			ImportPath: replace.New.Path,
-			File:       relPath(root, filepath.Join(module.absDir, goModFileName)),
-			Line:       modfileLine(replace.Syntax),
-		})
-	}
-
-	return findings
 }
 
 func unresolvedToolDependencyFindings(root string, module moduleState) []Finding {
@@ -181,8 +171,4 @@ func modfileLine(line *modfile.Line) int {
 		return firstLine
 	}
 	return line.Start.Line
-}
-
-func isLocalReplacePath(value string) bool {
-	return filepath.IsAbs(value) || strings.HasPrefix(value, ".")
 }

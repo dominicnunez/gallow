@@ -5,7 +5,7 @@ These settings must be applied in GitHub repository settings.
 Description:
 
 ```text
-Fallow-style codebase intelligence for Go
+Repository entropy analysis for Go: dead code, dependency drift, duplication, and branch audits
 ```
 
 Topics:
@@ -16,6 +16,7 @@ golang
 static-analysis
 cli
 code-quality
+repository-entropy
 dead-code
 dependency-analysis
 ci

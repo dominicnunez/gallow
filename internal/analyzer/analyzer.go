@@ -16,11 +16,10 @@ import (
 )
 
 const (
-	SchemaVersion = "1"
+	SchemaVersion = "2"
 
 	FindingUnusedDependency   = "unused-dependency"
 	FindingUnlistedDependency = "unlisted-dependency"
-	FindingTestOnlyDependency = "test-only-dependency"
 	FindingUnusedPackage      = "unused-package"
 	FindingUnusedFile         = "unused-file"
 	FindingUnusedFunction     = "unused-function"
@@ -31,10 +30,8 @@ const (
 	FindingUnusedVar          = "unused-var"
 	FindingUnusedConst        = "unused-const"
 	FindingUnusedField        = "unused-field"
-	FindingComplexity         = "complexity"
 	FindingDuplicateCode      = "duplicate-code"
 	FindingTidyDrift          = "tidy-drift"
-	FindingLocalReplace       = "local-replace"
 	FindingToolDependency     = "tool-dependency"
 
 	goModFileName  = "go.mod"
@@ -59,8 +56,6 @@ type Options struct {
 	IgnoreFindings     []FindingMatcher
 	WorkspacePatterns  []string
 	BuildTags          []string
-	MaxCyclomatic      int
-	MaxCognitive       int
 	CheckModuleHygiene bool
 }
 
@@ -89,11 +84,8 @@ type Summary struct {
 	SuppressedFindings   int `json:"suppressed_findings,omitempty"`
 	SuppressedByBaseline int `json:"suppressed_by_baseline,omitempty"`
 	SkippedModules       int `json:"skipped_modules,omitempty"`
-	CoveredFindings      int `json:"covered_findings,omitempty"`
-	UncoveredFindings    int `json:"uncovered_findings,omitempty"`
 	UnusedDependencies   int `json:"unused_dependencies"`
 	UnlistedDependencies int `json:"unlisted_dependencies"`
-	TestOnlyDependencies int `json:"test_only_dependencies"`
 	UnusedPackages       int `json:"unused_packages"`
 	UnusedFiles          int `json:"unused_files"`
 	UnusedFunctions      int `json:"unused_functions"`
@@ -104,7 +96,6 @@ type Summary struct {
 	UnusedVars           int `json:"unused_vars"`
 	UnusedConsts         int `json:"unused_consts"`
 	UnusedFields         int `json:"unused_fields"`
-	ComplexityFindings   int `json:"complexity_findings"`
 	DuplicateGroups      int `json:"duplicate_groups"`
 	DuplicatedLines      int `json:"duplicated_lines"`
 }
@@ -117,34 +108,23 @@ type ModuleReport struct {
 }
 
 type Finding struct {
-	Type          string      `json:"type"`
-	Package       string      `json:"package,omitempty"`
-	Module        string      `json:"module,omitempty"`
-	Version       string      `json:"version,omitempty"`
-	ImportPath    string      `json:"import_path,omitempty"`
-	Symbol        string      `json:"symbol,omitempty"`
-	Receiver      string      `json:"receiver,omitempty"`
-	Struct        string      `json:"struct,omitempty"`
-	File          string      `json:"file"`
-	Line          int         `json:"line"`
-	Fingerprint   string      `json:"fingerprint"`
-	Metrics       Metrics     `json:"metrics,omitempty"`
-	Coverage      *Coverage   `json:"coverage,omitempty"`
-	Locations     []Location  `json:"locations,omitempty"`
-	Lines         int         `json:"lines,omitempty"`
-	Indirect      bool        `json:"indirect,omitempty"`
-	UsedIn        []ImportUse `json:"used_in,omitempty"`
-	UsedInModules []string    `json:"used_in_modules,omitempty"`
-}
-
-type Metrics struct {
-	Cyclomatic int `json:"cyclomatic,omitempty"`
-	Cognitive  int `json:"cognitive,omitempty"`
-}
-
-type Coverage struct {
-	Covered bool `json:"covered"`
-	Count   int  `json:"count,omitempty"`
+	Type          string       `json:"type"`
+	Package       string       `json:"package,omitempty"`
+	Module        string       `json:"module,omitempty"`
+	Version       string       `json:"version,omitempty"`
+	ImportPath    string       `json:"import_path,omitempty"`
+	Symbol        string       `json:"symbol,omitempty"`
+	Receiver      string       `json:"receiver,omitempty"`
+	Struct        string       `json:"struct,omitempty"`
+	File          string       `json:"file"`
+	Line          int          `json:"line"`
+	Fingerprint   string       `json:"fingerprint"`
+	Remediation   *Remediation `json:"remediation,omitempty"`
+	Locations     []Location   `json:"locations,omitempty"`
+	Lines         int          `json:"lines,omitempty"`
+	Indirect      bool         `json:"indirect,omitempty"`
+	UsedIn        []ImportUse  `json:"used_in,omitempty"`
+	UsedInModules []string     `json:"used_in_modules,omitempty"`
 }
 
 type Location struct {
@@ -384,7 +364,7 @@ func analyzeModule(root string, modules []moduleState, moduleIndex int, opts Opt
 	findings := make([]Finding, 0)
 	findings = append(findings, unlistedDependencyFindings(unlistedByImport)...)
 	if opts.CheckModuleHygiene {
-		hygieneFindings, err := moduleHygieneFindings(root, modules, module)
+		hygieneFindings, err := moduleHygieneFindings(root, module)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -409,21 +389,8 @@ func analyzeModule(root string, modules []moduleState, moduleIndex int, opts Opt
 			})
 			continue
 		}
-
-		if usesOnlyTests(uses) {
-			findings = append(findings, Finding{
-				Type:     FindingTestOnlyDependency,
-				Module:   req.Module,
-				Version:  req.Version,
-				File:     req.File,
-				Line:     req.Line,
-				Indirect: req.Indirect,
-				UsedIn:   uses,
-			})
-		}
 	}
 	findings = append(findings, deadCodeFindings(module)...)
-	findings = append(findings, healthFindings(module, opts)...)
 	findings = append(findings, duplicateFindings(module)...)
 	assignFingerprints(findings)
 	findings, suppressedByComment := applyCommentSuppressions(findings, module)
@@ -437,6 +404,7 @@ func analyzeModule(root string, modules []moduleState, moduleIndex int, opts Opt
 func finalizeReport(report *Report) {
 	for i := range report.Modules {
 		assignFingerprints(report.Modules[i].Findings)
+		assignRemediations(report.Modules[i].Findings)
 	}
 	report.Summary = summarize(report.Modules)
 }
@@ -697,19 +665,7 @@ func summarize(modules []ModuleReport) Summary {
 
 func (s *Summary) addFinding(finding Finding) {
 	s.Findings++
-	s.addCoverage(finding.Coverage)
 	s.addFindingType(finding)
-}
-
-func (s *Summary) addCoverage(coverage *Coverage) {
-	if coverage == nil {
-		return
-	}
-	if coverage.Covered {
-		s.CoveredFindings++
-		return
-	}
-	s.UncoveredFindings++
 }
 
 func (s *Summary) addFindingType(finding Finding) {
@@ -718,8 +674,6 @@ func (s *Summary) addFindingType(finding Finding) {
 		s.UnusedDependencies++
 	case FindingUnlistedDependency:
 		s.UnlistedDependencies++
-	case FindingTestOnlyDependency:
-		s.TestOnlyDependencies++
 	case FindingUnusedPackage:
 		s.UnusedPackages++
 	case FindingUnusedFile:
@@ -740,8 +694,6 @@ func (s *Summary) addFindingType(finding Finding) {
 		s.UnusedConsts++
 	case FindingUnusedField:
 		s.UnusedFields++
-	case FindingComplexity:
-		s.ComplexityFindings++
 	case FindingDuplicateCode:
 		s.DuplicateGroups++
 		s.DuplicatedLines += finding.Lines
@@ -776,20 +728,6 @@ func isExternalImport(importPath string) bool {
 
 	firstSegment, _, _ := strings.Cut(importPath, "/")
 	return strings.Contains(firstSegment, ".")
-}
-
-func usesOnlyTests(uses []ImportUse) bool {
-	if len(uses) == 0 {
-		return false
-	}
-
-	for _, use := range uses {
-		if !use.Test {
-			return false
-		}
-	}
-
-	return true
 }
 
 func shouldSkipDir(name string) bool {
