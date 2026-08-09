@@ -1,278 +1,171 @@
 # Gallow
 
-Fallow-style codebase intelligence for Go.
-
 [![CI](https://github.com/dominicnunez/gallow/actions/workflows/ci.yml/badge.svg)](https://github.com/dominicnunez/gallow/actions/workflows/ci.yml)
 ![Go version](https://img.shields.io/github/go-mod/go-version/dominicnunez/gallow)
 ![License](https://img.shields.io/github/license/dominicnunez/gallow)
 
-Gallow is a Fallow-style codebase intelligence tool for Go. It analyzes Go modules for dependency drift, unused code, module hygiene issues, complexity hotspots, duplicate code, and CI-ready quality signals.
+Gallow is a conservative **repository entropy analyzer for Go**.
 
-Gallow is inspired by Fallow's codebase-intelligence model. It is not the official Fallow project, and it is built specifically for Go modules.
+It answers four questions:
 
-## Why Gallow?
+1. What code is no longer needed?
+2. What dependencies are no longer needed or incorrectly represented?
+3. What implementation has been duplicated?
+4. What new entropy did this branch introduce?
 
-Go already has excellent quality tools. Gallow is intended to sit beside them by combining repo-wide hygiene signals into one workflow, especially for module drift, dead code, baselines, audit output, and CI adoption.
+Gallow complements `go vet`, Staticcheck, `go mod tidy`, security scanners, and architecture tools. It is not a general-purpose linter.
 
-| Tool | Primary job | Where Gallow fits |
-| --- | --- | --- |
-| `go vet` | Correctness and suspicious code | Gallow adds repo-wide dependency, dead-code, hygiene, and reporting checks. |
-| `staticcheck` | Go static analysis | Gallow focuses on codebase-level drift and adoption workflows rather than individual diagnostics. |
-| `go mod tidy` | Module cleanup | Gallow runs read-only `go mod tidy -diff` and reports drift without mutating files. |
-| `golangci-lint` | Lint aggregation | Gallow is a focused analyzer with baselines, audit mode, and CI output formats. |
-| Gallow | Repo-wide dependency drift, dead code, module hygiene, baselines, CI and audit reporting | Use it when you want one conservative pass over module and codebase health. |
-
-## Features
-
-- Unused direct `require` entries in `go.mod`.
-- External imports used in code but missing from `go.mod`.
-- Dependencies used only from `*_test.go` files.
-- Unused internal packages, files, functions, methods, structs, fields, interfaces, type aliases, vars, and consts.
-- Complexity findings above configured cyclomatic or cognitive thresholds.
-- Duplicate code windows across Go files.
-- Read-only `go mod tidy -diff` drift detection.
-- Suspicious local `replace` directives that do not point at a discovered sibling module.
-- Conventional Go `tool` directives and `tools.go` imports.
-- Nested Go module analysis with workspace filters and build tags.
-- Baselines, inline suppressions, coverage annotation, audit mode, and CI formats.
-
-## Quickstart
-
-Install the CLI:
+## Install
 
 ```bash
 go install github.com/dominicnunez/gallow/cmd/gallow@latest
 ```
 
-Run it from a Go module:
+## Primary workflow
+
+Audit a branch against its base:
+
+```bash
+gallow audit --base origin/main
+```
+
+This keeps existing repository debt from blocking adoption and focuses review on entropy introduced or worsened by the current change.
+
+Run a full repository check:
 
 ```bash
 gallow --root .
-gallow --summary
-gallow --format json
-gallow --ci
-gallow audit --base origin/main --format sarif
 ```
 
-When working from a checkout of this repository, use:
+Use Gallow in CI:
 
 ```bash
-go run ./cmd/gallow --root . --summary
+gallow audit --base origin/main --format sarif --ci
 ```
 
-## Usage
+## Analysis families
 
-```bash
-gallow [dead-code|audit] [flags] [root]
-```
+### Code entropy
 
-Common flags:
+Gallow reports unused packages, files, functions, methods, structs, interfaces, types, variables, constants, and fields.
 
-- `--root`, `-r`: root directory to scan, default `.`.
-- `--config`, `-c`: config file path.
-- `--format`, `-f`: `human`, `json`, `sarif`, `codeclimate`, `gitlab-codequality`, or `annotations`, default `human`.
-- `--production`: exclude `*_test.go` files.
-- `--all-requires`: also check `// indirect` requirements for unused status.
-- `--ignore-generated`: skip files with generated-code headers.
-- `--summary`: print only counts in human output.
-- `--max-cyclomatic`: enable cyclomatic complexity findings above this threshold.
-- `--max-cognitive`: enable cognitive complexity findings above this threshold.
-- `--workspace`: comma-separated module path or directory filters.
-- `--tags`: comma-separated Go build tags.
-- `--coverage`: Go coverage profile to annotate findings.
-- `--base`, `--changed-since`: base ref for `audit`.
-- `--fail-on-issues`: exit with status 1 when findings exist.
-- `--ci`: equivalent to `--fail-on-issues`.
-- `--baseline`: suppress findings recorded in a baseline file.
-- `--save-baseline`: write current findings to a baseline file.
+### Dependency entropy
 
-## Configuration
+Gallow reports:
 
-Gallow loads `.gallowrc.json` from the selected root when present. Use `--config <path>` to load a different file. CLI flags override config values.
+- unused direct requirements;
+- external imports without matching direct requirements;
+- `go mod tidy -diff` drift;
+- unresolved Go `tool` directives.
+
+Dependencies used only by tests are treated as used when tests are included. Local `replace` directives are outside Gallow's repository-entropy scope.
+
+### Duplication entropy
+
+Gallow reports repeated Go code windows with all related locations. Its remediation order is:
+
+1. remove an obsolete or redundant copy;
+2. extract shared logic when both copies are required and should evolve together;
+3. narrowly suppress intentional local duplication.
+
+## Removal-first remediation
+
+Every supported finding includes structured remediation metadata in JSON and SARIF. When removal is a valid remedy, Gallow recommends it first.
+
+Example:
 
 ```json
 {
-  "format": "json",
-  "production": true,
-  "workspace": ["github.com/acme/service"],
-  "buildTags": ["integration"],
-  "ignorePatterns": ["internal/generated/**"],
-  "ignoreFindings": [
-    {"type": "duplicate-code", "file": "**/*_test.go"},
-    {"type": "complexity", "file": "internal/parser.go", "symbol": "parseArchiveFormat"}
-  ],
-  "health": {
-    "maxCyclomatic": 20,
-    "maxCognitive": 15
-  },
-  "rules": {
-    "unused-function": "off",
-    "unused-field": "warn"
+  "remediation": {
+    "preferred": "remove",
+    "summary": "Remove the unused direct requirement."
   }
 }
 ```
 
-Rule severities are `off`, `warn`, and `error`. The current CLI treats `warn` and `error` as reportable findings; `off` disables matching findings.
+Gallow does not automatically delete source code.
 
-Use `ignoreFindings` for known acceptable findings without ignoring every finding in a file. Each entry matches only the fields provided. `file` supports the same glob patterns as `ignorePatterns`; other fields match exactly, including `type`, `symbol`, `package`, `module`, `importPath`, `receiver`, `struct`, and `fingerprint`.
-
-## Example Output
-
-Human output is compact:
+## Commands and flags
 
 ```text
-example.com/app (.)
-  unused dependency github.com/acme/old v0.4.0 at go.mod:12
-  go mod tidy drift at go.mod:1
-  complex function example.com/app/internal/api.Handle at internal/api/handler.go:42 (cyclomatic 22, cognitive 31)
-
-Summary
-  modules: 1
-  findings: 3
-  unused dependencies: 1
-  complexity findings: 1
+gallow [check|dead-code|audit] [flags] [root]
 ```
 
-GitHub annotation output includes warning severity:
+Important flags:
 
-```text
-::warning file=go.mod,line=12::unused-dependency: github.com/acme/old
-::warning file=go.mod,line=1::tidy-drift
-::warning file=internal/api/handler.go,line=42::complexity: Handle
+- `--base`, `--changed-since`: base ref for audit mode; default `HEAD~1`;
+- `--root`, `-r`: repository root;
+- `--format`, `-f`: `human`, `json`, or `sarif`;
+- `--baseline`: suppress findings recorded in a baseline;
+- `--save-baseline`: write the current findings to a baseline;
+- `--workspace`: comma-separated module path or directory filters;
+- `--tags`: comma-separated Go build tags;
+- `--production`: exclude `*_test.go` files;
+- `--all-requires`: also check indirect requirements;
+- `--ignore-generated`: skip generated Go files;
+- `--summary`: print only summary counts in human output;
+- `--fail-on-issues`, `--ci`: exit with status 1 when findings exist.
+
+## Configuration
+
+Gallow reads `.gallowrc.json` from the selected root unless `--config` specifies another file.
+
+```json
+{
+  "format": "human",
+  "rules": {
+    "duplicate-code": "warn"
+  },
+  "ignorePatterns": ["internal/generated/**"],
+  "ignoreFindings": [
+    {
+      "type": "duplicate-code",
+      "file": "**/*_test.go"
+    }
+  ],
+  "workspace": ["example.com/app"],
+  "buildTags": ["integration"]
+}
 ```
 
-Suggested actions are currently documented by finding type rather than emitted as a separate machine-readable field.
+Inline suppressions and saved baselines remain available for narrow, intentional exceptions.
 
-| Finding type | Suggested action |
-| --- | --- |
-| `unused-dependency` | Remove the unused requirement or confirm it is intentionally kept. |
-| `unlisted-dependency` | Add the dependency with `go get` or remove the import. |
-| `tidy-drift` | Run `go mod tidy` and review the diff. |
-| `local-replace` | Remove the local replace or point it at a checked-in sibling module. |
-| `complexity` | Split or simplify the function if the threshold reflects your team policy. |
-| `duplicate-code` | Consider extracting shared logic when the duplicated block is intentional code, not test setup. |
+## Finding types
 
-## Finding Types
+| Type | Meaning | Preferred first action |
+|---|---|---|
+| `unused-dependency` | Direct requirement is not used | Remove the requirement |
+| `unlisted-dependency` | Import lacks a direct requirement | Remove the import if unnecessary |
+| `unused-package` | Package is unreachable | Remove the package |
+| `unused-file` | File declarations are unused | Remove the file |
+| `unused-function` | Function is unreachable | Remove the function |
+| `unused-method` | Method is unreachable | Remove the method |
+| `unused-struct` | Struct is unreachable | Remove the struct |
+| `unused-interface` | Interface is unreachable | Remove the interface |
+| `unused-type` | Type is unreachable | Remove the type |
+| `unused-var` | Package variable is unreachable | Remove the variable |
+| `unused-const` | Constant is unreachable | Remove the constant |
+| `unused-field` | Field appears unused | Remove after checking dynamic use |
+| `duplicate-code` | Code window appears in multiple places | Remove an obsolete copy |
+| `tidy-drift` | `go mod tidy -diff` reports drift | Run tidy and inspect the diff |
+| `tool-dependency` | Tool directive has no matching requirement | Remove the directive if unnecessary |
 
-Gallow uses stable finding type IDs as SARIF `ruleId` values:
+## Output contracts
 
-| Rule ID | Meaning |
-| --- | --- |
-| `unused-dependency` | Direct module requirement appears unused. |
-| `unlisted-dependency` | External import has no matching direct requirement. |
-| `test-only-dependency` | Dependency is only used from tests. |
-| `unused-package` | Internal package is unreachable. |
-| `unused-file` | Go file declarations appear unused. |
-| `unused-function`, `unused-method` | Function or method appears unused. |
-| `unused-struct`, `unused-interface`, `unused-type` | Type declaration appears unused. |
-| `unused-var`, `unused-const`, `unused-field` | Package value or field appears unused. |
-| `complexity` | Function exceeds configured complexity thresholds. |
-| `duplicate-code` | Repeated Go code window was found. |
-| `tidy-drift` | `go mod tidy -diff` would change module files. |
-| `local-replace` | Local `replace` does not point at a discovered sibling module. |
-| `tool-dependency` | Go `tool` directive has no matching requirement. |
+- Human output is the developer contract.
+- JSON is the stable automation contract.
+- SARIF is the standardized CI and code-scanning contract.
 
-## CI Usage
+The machine-readable report schema is versioned through `schema_version`.
 
-Gallow supports `json`, `sarif`, `codeclimate`, `gitlab-codequality`, and GitHub `annotations` output.
-
-Run the same command locally and in CI:
-
-```bash
-gallow --root . --summary --ci
-```
-
-Use audit mode to scope findings to changed files:
-
-```bash
-gallow audit --base origin/main --format sarif
-```
-
-Coverage profiles from `go test -coverprofile=coverage.out ./...` can annotate matching findings:
-
-```bash
-gallow --coverage coverage.out --format json
-```
-
-## GitHub Code Scanning
-
-Use SARIF upload for GitHub's Code Scanning UI. Generate SARIF without `--ci` so alerts can be uploaded even when findings exist. Keep `--ci` as a separate build gate when you want findings to fail the workflow.
-
-```yaml
-name: Code Scanning
-
-on:
-  push:
-  pull_request:
-
-permissions:
-  actions: read
-  contents: read
-  security-events: write
-
-jobs:
-  gallow:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - run: go run ./cmd/gallow --root . --format sarif > gallow.sarif
-      - uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: gallow.sarif
-          category: gallow
-```
-
-Gallow's SARIF output includes rule metadata, stable rule IDs, deterministic SARIF levels, related locations for multi-location findings, and Gallow fingerprints for alert continuity.
-
-## Baselines And Suppressions
-
-Use inline comments for intentional exceptions:
-
-```go
-// gallow-ignore-next-line unused-function
-func RuntimeHook() {}
-
-// gallow-ignore-file
-```
-
-Use baselines to adopt Gallow incrementally:
-
-```bash
-gallow --save-baseline gallow-baseline.json
-gallow --baseline gallow-baseline.json --fail-on-issues
-```
-
-## Known Limitations
-
-Dead-code analysis in Go is conservative and difficult. Gallow prefers conservative findings over noisy false positives.
-
-Areas that can affect precision include reflection, generated code, build tags, exported APIs, framework conventions, interface usage, test-only references, and `//go:linkname`.
-
-## Roadmap
-
-- Richer SARIF and code scanning integration.
-- Improved dead-code confidence levels.
-- Better monorepo and workspace support.
-- LSP and MCP integration.
-- More precise generated-code handling.
-- Release binaries through GitHub Releases.
-
-## Contributing
-
-Before opening a change, run:
+## Development
 
 ```bash
 go fmt ./...
 go test ./...
 go vet ./...
-go run ./cmd/gallow --root . --summary --ci
+go run ./cmd/gallow --root . --summary
+go run ./cmd/gallow audit --root . --base origin/main --summary
 ```
 
-Keep changes small and verify README examples against implemented flags.
-
-## License
-
-Gallow is available under the MIT License. See `LICENSE`.
+See [the product direction](docs/product-direction.md) and [the 0.2 migration guide](docs/migration-0.2.md).

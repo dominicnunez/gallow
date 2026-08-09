@@ -15,18 +15,15 @@ import (
 
 const (
 	appName = "gallow"
-	version = "0.1.0"
+	version = "0.2.0"
 
 	exitOK     = 0
 	exitIssues = 1
 	exitError  = 2
 
-	formatHuman             = "human"
-	formatJSON              = "json"
-	formatSARIF             = "sarif"
-	formatCodeClimate       = "codeclimate"
-	formatGitLabCodeQuality = "gitlab-codequality"
-	formatAnnotations       = "annotations"
+	formatHuman = "human"
+	formatJSON  = "json"
+	formatSARIF = "sarif"
 )
 
 const (
@@ -46,13 +43,10 @@ type cliOptions struct {
 	configPath       string
 	baselinePath     string
 	saveBaselinePath string
-	coveragePath     string
 	baseRef          string
 	workspaceCSV     string
 	tagsCSV          string
 	outputFormat     string
-	maxCyclomatic    int
-	maxCognitive     int
 	production       bool
 	allRequires      bool
 	ignoreGenerated  bool
@@ -67,7 +61,6 @@ type humanFindingWriter func(io.Writer, analyzer.Finding)
 var humanFindingWriters = map[string]humanFindingWriter{
 	analyzer.FindingUnusedDependency:   writeUnusedDependencyFinding,
 	analyzer.FindingUnlistedDependency: writeUnlistedDependencyFinding,
-	analyzer.FindingTestOnlyDependency: writeTestOnlyDependencyFinding,
 	analyzer.FindingUnusedPackage:      writeUnusedPackageFinding,
 	analyzer.FindingUnusedFile:         writeUnusedFileFinding,
 	analyzer.FindingUnusedFunction:     writeUnusedFunctionFinding,
@@ -78,10 +71,8 @@ var humanFindingWriters = map[string]humanFindingWriter{
 	analyzer.FindingUnusedVar:          writeUnusedVarFinding,
 	analyzer.FindingUnusedConst:        writeUnusedConstFinding,
 	analyzer.FindingUnusedField:        writeUnusedFieldFinding,
-	analyzer.FindingComplexity:         writeComplexityFinding,
 	analyzer.FindingDuplicateCode:      writeDuplicateCodeFinding,
 	analyzer.FindingTidyDrift:          writeTidyDriftFinding,
-	analyzer.FindingLocalReplace:       writeLocalReplaceFinding,
 	analyzer.FindingToolDependency:     writeToolDependencyFinding,
 }
 
@@ -111,15 +102,6 @@ var sarifRuleDefinitions = []sarifRuleDefinition{
 		shortDescription: "An external import is missing from go.mod.",
 		fullDescription:  "Gallow found an external import without a matching direct Go module requirement.",
 		help:             "Add the dependency with go get or remove the import.",
-		level:            sarifLevelWarning,
-		tags:             []string{"dependency", "module-hygiene"},
-	},
-	{
-		id:               analyzer.FindingTestOnlyDependency,
-		name:             "Test-only dependency",
-		shortDescription: "A dependency is only used by tests.",
-		fullDescription:  "Gallow found a direct requirement whose imports appear only in test files.",
-		help:             "Confirm the dependency belongs in the module contract or move usage/configuration to a test-only pattern.",
 		level:            sarifLevelWarning,
 		tags:             []string{"dependency", "module-hygiene"},
 	},
@@ -214,20 +196,11 @@ var sarifRuleDefinitions = []sarifRuleDefinition{
 		tags:             []string{"dead-code"},
 	},
 	{
-		id:               analyzer.FindingComplexity,
-		name:             "Complex function",
-		shortDescription: "A function exceeds configured complexity thresholds.",
-		fullDescription:  "Gallow found a function or method whose cyclomatic or cognitive complexity exceeds the configured threshold.",
-		help:             "Split or simplify the function if the threshold reflects your team's policy.",
-		level:            sarifLevelNote,
-		tags:             []string{"maintainability"},
-	},
-	{
 		id:               analyzer.FindingDuplicateCode,
 		name:             "Duplicate code",
 		shortDescription: "A repeated Go code window was found.",
 		fullDescription:  "Gallow found a duplicated code window across Go source files.",
-		help:             "Consider extracting shared logic when the duplicated block is intentional production code rather than setup or fixtures.",
+		help:             "Remove an obsolete copy first. Extract shared logic only when both copies are required and should evolve together.",
 		level:            sarifLevelNote,
 		tags:             []string{"maintainability"},
 	},
@@ -237,15 +210,6 @@ var sarifRuleDefinitions = []sarifRuleDefinition{
 		shortDescription: "go mod tidy would update module files.",
 		fullDescription:  "Gallow ran go mod tidy -diff and found pending go.mod or go.sum changes.",
 		help:             "Run go mod tidy and review the diff.",
-		level:            sarifLevelWarning,
-		tags:             []string{"dependency", "module-hygiene"},
-	},
-	{
-		id:               analyzer.FindingLocalReplace,
-		name:             "Suspicious local replace",
-		shortDescription: "A local replace directive does not point at a discovered sibling module.",
-		fullDescription:  "Gallow found a local replace directive whose target is not one of the Go modules discovered in the scanned repository.",
-		help:             "Remove the local replace or point it at a checked-in sibling module.",
 		level:            sarifLevelWarning,
 		tags:             []string{"dependency", "module-hygiene"},
 	},
@@ -290,6 +254,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func parseRunOptions(args []string, stdout io.Writer, stderr io.Writer) (cliOptions, settings.Config, int, bool) {
+	if option, ok := removedCLIOption(args); ok {
+		writeDiagnostic(stderr, "option %q was removed as part of Gallow's repository-entropy refocus\n", option)
+		return cliOptions{}, settings.Config{}, exitError, false
+	}
+
 	command, args := splitCommand(args)
 	opts := defaultCLIOptions(command)
 	fs := newFlagSet(&opts, stderr)
@@ -322,6 +291,10 @@ func parseRunOptions(args []string, stdout io.Writer, stderr io.Writer) (cliOpti
 		applyConfig(&opts, cfg, seenFlags)
 	}
 	if !supportedFormat(opts.outputFormat) {
+		if removedOutputFormat(opts.outputFormat) {
+			writeDiagnostic(stderr, "format %q was removed; use %q for CI integrations or %q for a custom adapter\n", opts.outputFormat, formatSARIF, formatJSON)
+			return opts, settings.Config{}, exitError, false
+		}
 		writeDiagnostic(stderr, "unsupported format %q\n", opts.outputFormat)
 		return opts, settings.Config{}, exitError, false
 	}
@@ -347,15 +320,12 @@ func newFlagSet(opts *cliOptions, stderr io.Writer) *flag.FlagSet {
 	fs.StringVar(&opts.configPath, "c", "", "config file path")
 	fs.StringVar(&opts.baselinePath, "baseline", "", "suppress findings recorded in a baseline file")
 	fs.StringVar(&opts.saveBaselinePath, "save-baseline", "", "write current findings to a baseline file")
-	fs.StringVar(&opts.coveragePath, "coverage", "", "Go coverage profile to annotate findings")
 	fs.StringVar(&opts.baseRef, "base", opts.baseRef, "base ref for audit mode")
 	fs.StringVar(&opts.baseRef, "changed-since", opts.baseRef, "base ref for audit mode")
 	fs.StringVar(&opts.workspaceCSV, "workspace", "", "comma-separated module path or directory filters")
 	fs.StringVar(&opts.tagsCSV, "tags", "", "comma-separated Go build tags")
-	fs.StringVar(&opts.outputFormat, "format", opts.outputFormat, "output format: human, json, sarif, codeclimate, gitlab-codequality, or annotations")
-	fs.StringVar(&opts.outputFormat, "f", opts.outputFormat, "output format: human, json, sarif, codeclimate, gitlab-codequality, or annotations")
-	fs.IntVar(&opts.maxCyclomatic, "max-cyclomatic", 0, "enable cyclomatic complexity findings above this threshold")
-	fs.IntVar(&opts.maxCognitive, "max-cognitive", 0, "enable cognitive complexity findings above this threshold")
+	fs.StringVar(&opts.outputFormat, "format", opts.outputFormat, "output format: human, json, or sarif")
+	fs.StringVar(&opts.outputFormat, "f", opts.outputFormat, "output format: human, json, or sarif")
 	fs.BoolVar(&opts.production, "production", false, "exclude *_test.go files")
 	fs.BoolVar(&opts.allRequires, "all-requires", false, "also check indirect requirements for unused status")
 	fs.BoolVar(&opts.ignoreGenerated, "ignore-generated", false, "skip generated Go files")
@@ -383,8 +353,6 @@ func analyzerOptions(opts cliOptions, cfg settings.Config) analyzer.Options {
 		IgnoreFindings:     analyzerFindingMatchers(cfg.IgnoreFindings),
 		WorkspacePatterns:  splitCSV(opts.workspaceCSV),
 		BuildTags:          splitCSV(opts.tagsCSV),
-		MaxCyclomatic:      opts.maxCyclomatic,
-		MaxCognitive:       opts.maxCognitive,
 		CheckModuleHygiene: true,
 	}
 }
@@ -424,12 +392,6 @@ func postProcessReport(opts cliOptions, report *analyzer.Report, stderr io.Write
 			return exitError
 		}
 	}
-	if opts.coveragePath != "" {
-		if err := analyzer.ApplyCoverage(opts.coveragePath, report); err != nil {
-			writeDiagnostic(stderr, "coverage: %v\n", err)
-			return exitError
-		}
-	}
 	if opts.command == "audit" {
 		changed, err := changedFiles(opts.root, opts.baseRef)
 		if err != nil {
@@ -457,16 +419,6 @@ func writeOutput(stdout io.Writer, stderr io.Writer, report *analyzer.Report, op
 	case formatSARIF:
 		if err := writeSARIF(stdout, report); err != nil {
 			writeDiagnostic(stderr, "write sarif: %v\n", err)
-			return exitError
-		}
-	case formatCodeClimate, formatGitLabCodeQuality:
-		if err := writeCodeClimate(stdout, report); err != nil {
-			writeDiagnostic(stderr, "write code quality: %v\n", err)
-			return exitError
-		}
-	case formatAnnotations:
-		if err := writeAnnotations(stdout, report); err != nil {
-			writeDiagnostic(stderr, "write annotations: %v\n", err)
 			return exitError
 		}
 	}
@@ -498,8 +450,6 @@ func loadConfig(root string, configPath string) (settings.Config, bool, error) {
 func applyConfig(opts *cliOptions, cfg settings.Config, seen map[string]bool) {
 	applyStringConfig(&opts.root, cfg.Root, !seen["root"] && !seen["r"])
 	applyStringConfig(&opts.outputFormat, cfg.Format, !seen["format"] && !seen["f"])
-	applyIntConfig(&opts.maxCyclomatic, cfg.Health.MaxCyclomatic, !seen["max-cyclomatic"])
-	applyIntConfig(&opts.maxCognitive, cfg.Health.MaxCognitive, !seen["max-cognitive"])
 	applyBoolConfig(&opts.production, cfg.Production, !seen["production"])
 	applyBoolConfig(&opts.allRequires, cfg.AllRequires, !seen["all-requires"])
 	applyBoolConfig(&opts.ignoreGenerated, cfg.IgnoreGenerated, !seen["ignore-generated"])
@@ -511,12 +461,6 @@ func applyConfig(opts *cliOptions, cfg settings.Config, seen map[string]bool) {
 
 func applyStringConfig(target *string, value string, allowed bool) {
 	if value != "" && allowed {
-		*target = value
-	}
-}
-
-func applyIntConfig(target *int, value int, allowed bool) {
-	if value != 0 && allowed {
 		*target = value
 	}
 }
@@ -535,11 +479,32 @@ func applyStringSliceConfig(target *string, values []string) {
 
 func supportedFormat(format string) bool {
 	switch format {
-	case formatHuman, formatJSON, formatSARIF, formatCodeClimate, formatGitLabCodeQuality, formatAnnotations:
+	case formatHuman, formatJSON, formatSARIF:
 		return true
 	default:
 		return false
 	}
+}
+
+func removedOutputFormat(format string) bool {
+	switch format {
+	case "codeclimate", "gitlab-codequality", "annotations":
+		return true
+	default:
+		return false
+	}
+}
+
+func removedCLIOption(args []string) (string, bool) {
+	for _, arg := range args {
+		option, _, _ := strings.Cut(arg, "=")
+		switch option {
+		case "--coverage", "--max-cyclomatic", "--max-cognitive":
+			return option, true
+		}
+	}
+
+	return "", false
 }
 
 func splitCommand(args []string) (string, []string) {
@@ -705,6 +670,11 @@ type sarifResult struct {
 	RelatedLocations    []sarifRelatedLocation `json:"relatedLocations,omitempty"`
 	Fingerprints        map[string]string      `json:"fingerprints,omitempty"`
 	PartialFingerprints map[string]string      `json:"partialFingerprints,omitempty"`
+	Properties          sarifResultProperties  `json:"properties,omitempty"`
+}
+
+type sarifResultProperties struct {
+	Remediation *analyzer.Remediation `json:"remediation,omitempty"`
 }
 
 type sarifRun struct {
@@ -773,6 +743,10 @@ func sarifResults(report *analyzer.Report, ruleIndexes map[string]int) []sarifRe
 	findings := allFindings(report)
 	results := make([]sarifResult, 0, len(findings))
 	for _, finding := range findings {
+		remediation := finding.Remediation
+		if remediation == nil {
+			remediation = analyzer.RemediationForFinding(finding)
+		}
 		result := sarifResult{
 			RuleID:              finding.Type,
 			RuleIndex:           sarifRuleIndex(finding.Type, ruleIndexes),
@@ -782,6 +756,7 @@ func sarifResults(report *analyzer.Report, ruleIndexes map[string]int) []sarifRe
 			RelatedLocations:    sarifRelatedLocations(finding),
 			Fingerprints:        sarifFingerprints(finding),
 			PartialFingerprints: sarifFingerprints(finding),
+			Properties:          sarifResultProperties{Remediation: remediation},
 		}
 		results = append(results, result)
 	}
@@ -873,26 +848,20 @@ func sarifFindingMessage(finding analyzer.Finding) string {
 		return fmt.Sprintf("Dependency %s is declared but not imported by reachable code. Remove the requirement or document why it must stay.", subject)
 	case analyzer.FindingUnlistedDependency:
 		return fmt.Sprintf("Import %s is used without a matching direct module requirement. Add it with go get or remove the import.", subject)
-	case analyzer.FindingTestOnlyDependency:
-		return fmt.Sprintf("Dependency %s is only used by tests. Confirm whether it belongs in the main module contract.", subject)
 	case analyzer.FindingUnusedPackage:
 		return fmt.Sprintf("Package %s is not reachable from module roots, main packages, or tests. Remove it or add an intentional reachable use.", subject)
 	case analyzer.FindingUnusedFile:
 		return "This file's declarations appear unused by reachable code. Remove it or add an intentional reachable use."
 	case analyzer.FindingUnusedFunction, analyzer.FindingUnusedMethod, analyzer.FindingUnusedStruct, analyzer.FindingUnusedInterface, analyzer.FindingUnusedType, analyzer.FindingUnusedVar, analyzer.FindingUnusedConst, analyzer.FindingUnusedField:
 		return fmt.Sprintf("%s appears unused by reachable code. Remove it or add a gallow-ignore suppression if it is intentionally used indirectly.", subject)
-	case analyzer.FindingComplexity:
-		return fmt.Sprintf("%s exceeds configured complexity thresholds (cyclomatic %d, cognitive %d). Split or simplify it if the threshold reflects your team policy.", subject, finding.Metrics.Cyclomatic, finding.Metrics.Cognitive)
 	case analyzer.FindingDuplicateCode:
-		return fmt.Sprintf("Duplicate code group %s spans %d duplicated lines. Consider extracting shared logic if this is production code.", subject, finding.Lines)
+		return fmt.Sprintf("Duplicate code group %s spans %d duplicated lines. Remove an obsolete copy first; extract shared logic only when both copies are required.", subject, finding.Lines)
 	case analyzer.FindingTidyDrift:
 		return "go mod tidy -diff reported module drift. Run go mod tidy and review the resulting go.mod or go.sum changes."
-	case analyzer.FindingLocalReplace:
-		return fmt.Sprintf("Local replace %s does not point at a discovered sibling module. Remove it or check in the sibling module.", subject)
 	case analyzer.FindingToolDependency:
-		return fmt.Sprintf("Tool dependency %s has no matching module requirement. Add the requirement or remove the tool directive.", subject)
+		return fmt.Sprintf("Tool dependency %s has no matching module requirement. Remove the tool directive if unnecessary; otherwise add the requirement.", subject)
 	default:
-		return findingMessage(finding)
+		return finding.Type
 	}
 }
 
@@ -916,51 +885,6 @@ func findingSubject(finding analyzer.Finding) string {
 	return finding.Type
 }
 
-func writeCodeClimate(w io.Writer, report *analyzer.Report) error {
-	type location struct {
-		Path  string `json:"path"`
-		Lines struct {
-			Begin int `json:"begin"`
-		} `json:"lines"`
-	}
-	type issue struct {
-		Type        string   `json:"type"`
-		CheckName   string   `json:"check_name"`
-		Description string   `json:"description"`
-		Categories  []string `json:"categories"`
-		Fingerprint string   `json:"fingerprint"`
-		Severity    string   `json:"severity"`
-		Location    location `json:"location"`
-	}
-	issues := make([]issue, 0)
-	for _, finding := range allFindings(report) {
-		item := issue{
-			Type:        "issue",
-			CheckName:   finding.Type,
-			Description: findingMessage(finding),
-			Categories:  []string{"Bug Risk"},
-			Fingerprint: finding.Fingerprint,
-			Severity:    "minor",
-		}
-		item.Location.Path = finding.File
-		item.Location.Lines.Begin = finding.Line
-		issues = append(issues, item)
-	}
-
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(issues)
-}
-
-func writeAnnotations(w io.Writer, report *analyzer.Report) error {
-	var builder strings.Builder
-	for _, finding := range allFindings(report) {
-		appendf(&builder, "::warning file=%s,line=%d::%s\n", escapeAnnotationProperty(finding.File), finding.Line, escapeAnnotation(findingMessage(finding)))
-	}
-	_, err := io.WriteString(w, builder.String())
-	return err
-}
-
 func allFindings(report *analyzer.Report) []analyzer.Finding {
 	var findings []analyzer.Finding
 	for _, module := range report.Modules {
@@ -968,34 +892,6 @@ func allFindings(report *analyzer.Report) []analyzer.Finding {
 	}
 
 	return findings
-}
-
-func findingMessage(finding analyzer.Finding) string {
-	if finding.Symbol != "" {
-		return fmt.Sprintf("%s: %s", finding.Type, finding.Symbol)
-	}
-	if finding.Module != "" {
-		return fmt.Sprintf("%s: %s", finding.Type, finding.Module)
-	}
-	if finding.ImportPath != "" {
-		return fmt.Sprintf("%s: %s", finding.Type, finding.ImportPath)
-	}
-
-	return finding.Type
-}
-
-func escapeAnnotation(value string) string {
-	value = strings.ReplaceAll(value, "%", "%25")
-	value = strings.ReplaceAll(value, "\r", "%0D")
-	value = strings.ReplaceAll(value, "\n", "%0A")
-	return value
-}
-
-func escapeAnnotationProperty(value string) string {
-	value = escapeAnnotation(value)
-	value = strings.ReplaceAll(value, ":", "%3A")
-	value = strings.ReplaceAll(value, ",", "%2C")
-	return value
 }
 
 func writeHuman(w io.Writer, report *analyzer.Report, summaryOnly bool) error {
@@ -1016,13 +912,8 @@ func writeHuman(w io.Writer, report *analyzer.Report, summaryOnly bool) error {
 	if report.Summary.SkippedModules > 0 {
 		appendf(&builder, "  skipped modules: %d\n", report.Summary.SkippedModules)
 	}
-	if report.Summary.CoveredFindings > 0 || report.Summary.UncoveredFindings > 0 {
-		appendf(&builder, "  covered findings: %d\n", report.Summary.CoveredFindings)
-		appendf(&builder, "  uncovered findings: %d\n", report.Summary.UncoveredFindings)
-	}
 	appendf(&builder, "  unused dependencies: %d\n", report.Summary.UnusedDependencies)
 	appendf(&builder, "  unlisted dependencies: %d\n", report.Summary.UnlistedDependencies)
-	appendf(&builder, "  test-only dependencies: %d\n", report.Summary.TestOnlyDependencies)
 	appendf(&builder, "  unused packages: %d\n", report.Summary.UnusedPackages)
 	appendf(&builder, "  unused files: %d\n", report.Summary.UnusedFiles)
 	appendf(&builder, "  unused functions: %d\n", report.Summary.UnusedFunctions)
@@ -1033,7 +924,6 @@ func writeHuman(w io.Writer, report *analyzer.Report, summaryOnly bool) error {
 	appendf(&builder, "  unused vars: %d\n", report.Summary.UnusedVars)
 	appendf(&builder, "  unused consts: %d\n", report.Summary.UnusedConsts)
 	appendf(&builder, "  unused fields: %d\n", report.Summary.UnusedFields)
-	appendf(&builder, "  complexity findings: %d\n", report.Summary.ComplexityFindings)
 	appendf(&builder, "  duplicate groups: %d\n", report.Summary.DuplicateGroups)
 	appendf(&builder, "  duplicated lines: %d\n", report.Summary.DuplicatedLines)
 
@@ -1068,6 +958,13 @@ func writeHumanFinding(w *strings.Builder, finding analyzer.Finding) {
 		return
 	}
 	writer(w, finding)
+	remediation := finding.Remediation
+	if remediation == nil {
+		remediation = analyzer.RemediationForFinding(finding)
+	}
+	if remediation != nil {
+		appendf(w, "    remediation (%s): %s\n", remediation.Preferred, remediation.Summary)
+	}
 }
 
 func writeUnusedDependencyFinding(w io.Writer, finding analyzer.Finding) {
@@ -1080,10 +977,6 @@ func writeUnusedDependencyFinding(w io.Writer, finding analyzer.Finding) {
 
 func writeUnlistedDependencyFinding(w io.Writer, finding analyzer.Finding) {
 	appendf(w, "  unlisted dependency %s imported at %s:%d\n", finding.ImportPath, finding.File, finding.Line)
-}
-
-func writeTestOnlyDependencyFinding(w io.Writer, finding analyzer.Finding) {
-	appendf(w, "  test-only dependency %s %s at %s:%d\n", finding.Module, finding.Version, finding.File, finding.Line)
 }
 
 func writeUnusedPackageFinding(w io.Writer, finding analyzer.Finding) {
@@ -1126,20 +1019,12 @@ func writeUnusedFieldFinding(w io.Writer, finding analyzer.Finding) {
 	appendf(w, "  unused field %s.%s in %s at %s:%d\n", finding.Struct, finding.Symbol, finding.Package, finding.File, finding.Line)
 }
 
-func writeComplexityFinding(w io.Writer, finding analyzer.Finding) {
-	appendf(w, "  complex function %s.%s at %s:%d (cyclomatic %d, cognitive %d)\n", finding.Package, finding.Symbol, finding.File, finding.Line, finding.Metrics.Cyclomatic, finding.Metrics.Cognitive)
-}
-
 func writeDuplicateCodeFinding(w io.Writer, finding analyzer.Finding) {
 	appendf(w, "  duplicate code %s at %s:%d (%d duplicated lines)\n", finding.Symbol, finding.File, finding.Line, finding.Lines)
 }
 
 func writeTidyDriftFinding(w io.Writer, finding analyzer.Finding) {
 	appendf(w, "  go mod tidy drift at %s:%d\n", finding.File, finding.Line)
-}
-
-func writeLocalReplaceFinding(w io.Writer, finding analyzer.Finding) {
-	appendf(w, "  local replace %s => %s at %s:%d\n", finding.Module, finding.ImportPath, finding.File, finding.Line)
 }
 
 func writeToolDependencyFinding(w io.Writer, finding analyzer.Finding) {

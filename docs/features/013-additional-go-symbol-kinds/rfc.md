@@ -8,7 +8,7 @@ Extend dead-code detection beyond functions, methods, structs, and fields to cov
 
 ## Problem
 
-The current analyzer misses several symbol kinds that can accumulate as code evolves. Expanding symbol coverage makes dead-code reports more complete and closer to Fallow-style codebase intelligence.
+The current analyzer misses several symbol kinds that can accumulate as code evolves. Expanding symbol coverage makes repository-entropy reports more complete.
 
 ## Required Behavior
 

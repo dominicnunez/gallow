@@ -1,9 +1,6 @@
 package analyzer
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,7 +49,7 @@ func main() { fmt.Println("ok") }
 	assertFinding(t, report, FindingUnlistedDependency, "github.com/missing/mod/pkg")
 }
 
-func TestAnalyzeReportsTestOnlyDependency(t *testing.T) {
+func TestAnalyzeTreatsTestOnlyDependencyAsUsed(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", `module example.com/app
 
@@ -67,16 +64,14 @@ func main() {}
 	writeFile(t, root, "main_test.go", `package main
 
 import _ "github.com/test/mod/assert"
-
-func TestMain(t *testing.T) {}
 `)
 
 	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true})
 	if err != nil {
 		t.Fatalf("Analyze() error = %v", err)
 	}
-	if got := report.Summary.TestOnlyDependencies; got != 1 {
-		t.Fatalf("test-only dependencies = %d; want 1", got)
+	if got := report.Summary.UnusedDependencies; got != 0 {
+		t.Fatalf("unused dependencies = %d; want 0 when a requirement is used by tests", got)
 	}
 
 	productionReport, err := Analyze(Options{Root: root, IncludeTests: false, IncludeGenerated: true})
@@ -85,6 +80,26 @@ func TestMain(t *testing.T) {}
 	}
 	if got := productionReport.Summary.UnusedDependencies; got != 1 {
 		t.Fatalf("production unused dependencies = %d; want 1", got)
+	}
+}
+
+func TestAnalyzeAddsRemovalFirstRemediation(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", `module example.com/app
+
+go 1.25
+
+require github.com/unused/mod v1.0.0
+`)
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+
+	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true})
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	finding := report.Modules[0].Findings[0]
+	if finding.Remediation == nil || finding.Remediation.Preferred != "remove" {
+		t.Fatalf("remediation = %#v; want removal-first metadata", finding.Remediation)
 	}
 }
 
@@ -727,51 +742,6 @@ func Dead() {}
 	}
 }
 
-func TestApplyCoverageAnnotatesFindings(t *testing.T) {
-	root := t.TempDir()
-	coveragePath := filepath.Join(root, "coverage.out")
-	writeFile(t, root, "coverage.out", `mode: set
-example.com/app/main.go:9.1,10.20 1 1
-example.com/app/main.go:12.1,12.20 1 0
-`)
-	report := &Report{
-		Modules: []ModuleReport{{
-			ModulePath: "example.com/app",
-			Dir:        ".",
-			Findings: []Finding{
-				{Type: FindingUnusedFunction, File: "main.go", Line: 10, Symbol: "Covered"},
-				{Type: FindingUnusedFunction, File: "main.go", Line: 12, Symbol: "Uncovered"},
-				{Type: FindingUnusedFunction, File: "other.go", Line: 5, Symbol: "Unknown"},
-			},
-		}},
-	}
-	report.Summary.SkippedModules = 1
-
-	if err := ApplyCoverage(coveragePath, report); err != nil {
-		t.Fatalf("ApplyCoverage() error = %v", err)
-	}
-
-	findings := report.Modules[0].Findings
-	if findings[0].Coverage == nil || !findings[0].Coverage.Covered || findings[0].Coverage.Count != 1 {
-		t.Fatalf("covered finding coverage = %#v; want covered count 1", findings[0].Coverage)
-	}
-	if findings[1].Coverage == nil || findings[1].Coverage.Covered {
-		t.Fatalf("uncovered finding coverage = %#v; want uncovered", findings[1].Coverage)
-	}
-	if findings[2].Coverage != nil {
-		t.Fatalf("unmatched finding coverage = %#v; want nil", findings[2].Coverage)
-	}
-	if got := report.Summary.CoveredFindings; got != 1 {
-		t.Fatalf("covered findings = %d; want 1", got)
-	}
-	if got := report.Summary.UncoveredFindings; got != 1 {
-		t.Fatalf("uncovered findings = %d; want 1", got)
-	}
-	if got := report.Summary.SkippedModules; got != 1 {
-		t.Fatalf("skipped modules = %d; want 1", got)
-	}
-}
-
 func TestAnalyzeReportsAdditionalSymbolKinds(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", `module example.com/app
@@ -813,142 +783,6 @@ func makeValue() int { return 1 }
 	assertSymbolFinding(t, report, FindingUnusedVar, "unusedVar")
 	assertSymbolFinding(t, report, FindingUnusedConst, "unusedConst")
 	assertNoSymbolFinding(t, report, FindingUnusedVar, "sideEffectVar")
-}
-
-func TestAnalyzeReportsComplexFunctions(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, root, "go.mod", `module example.com/app
-
-go 1.25
-`)
-	writeFile(t, root, "main.go", `package main
-
-func main() { complex(1) }
-
-func complex(v int) int {
-	if v > 0 {
-		if v > 10 {
-			return v
-		}
-	}
-	return 0
-}
-`)
-
-	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true, MaxCyclomatic: 1, MaxCognitive: 1})
-	if err != nil {
-		t.Fatalf("Analyze() error = %v", err)
-	}
-	if got := report.Summary.ComplexityFindings; got != 1 {
-		t.Fatalf("complexity findings = %d; want 1", got)
-	}
-	assertSymbolFinding(t, report, FindingComplexity, "complex")
-}
-
-func TestAnalyzeSkipsComplexityWhenThresholdsAreUnset(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, root, "go.mod", `module example.com/app
-
-go 1.25
-`)
-	writeFile(t, root, "main.go", `package main
-
-func main() { complex(1) }
-
-func complex(v int) int {
-	if v > 0 {
-		if v > 10 {
-			return v
-		}
-	}
-	return 0
-}
-`)
-
-	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true})
-	if err != nil {
-		t.Fatalf("Analyze() error = %v", err)
-	}
-	if got := report.Summary.ComplexityFindings; got != 0 {
-		t.Fatalf("complexity findings = %d; want 0", got)
-	}
-}
-
-func TestFunctionComplexityAlignsCognitiveScoringWithGocognitRules(t *testing.T) {
-	tests := []struct {
-		name      string
-		body      string
-		cognitive int
-	}{
-		{
-			name: "else if is not nested",
-			body: `if a {
-	return
-} else if b {
-	return
-}`,
-			cognitive: 2,
-		},
-		{
-			name: "else block counts separately",
-			body: `if a {
-	return
-} else {
-	return
-}`,
-			cognitive: 2,
-		},
-		{
-			name:      "logical operator runs count transitions",
-			body:      `if a && b && c || d || e && f { return }`,
-			cognitive: 4,
-		},
-		{
-			name: "switch counts once",
-			body: `switch a {
-case 1:
-	return
-case 2:
-	return
-default:
-	return
-}`,
-			cognitive: 1,
-		},
-		{
-			name: "function literal increases nesting",
-			body: `fn := func() {
-	if a {
-		return
-	}
-}
-_ = fn`,
-			cognitive: 2,
-		},
-		{
-			name:      "direct recursion counts calls",
-			body:      `if a { return sample() }; return sample()`,
-			cognitive: 3,
-		},
-		{
-			name: "labeled branches count",
-			body: `loop:
-for {
-	break loop
-}`,
-			cognitive: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fn := parseFunctionForComplexityTest(t, "func sample() int {\n"+tt.body+"\nreturn 0\n}")
-			_, cognitive := functionComplexity(fn)
-			if cognitive != tt.cognitive {
-				t.Fatalf("cognitive complexity = %d; want %d", cognitive, tt.cognitive)
-			}
-		})
-	}
 }
 
 func TestAnalyzeReportsDuplicateCode(t *testing.T) {
@@ -1081,7 +915,19 @@ func main() {}
 	}
 }
 
-func TestAnalyzeReportsSuspiciousLocalReplace(t *testing.T) {
+func TestTidyDiffIgnoresLineEndingOnlyChanges(t *testing.T) {
+	diff := "diff current/go.sum tidy/go.sum\n--- current/go.sum\n+++ tidy/go.sum\n@@ -1 +1 @@\n-entry checksum\r\n+entry checksum\n"
+	if tidyDiffHasSemanticChanges(diff) {
+		t.Fatal("line-ending-only tidy diff was treated as semantic drift")
+	}
+
+	semanticDiff := "diff current/go.mod tidy/go.mod\n--- current/go.mod\n+++ tidy/go.mod\n@@ -1 +1 @@\n-require example.com/old v1.0.0\n+require example.com/new v1.0.0\n"
+	if !tidyDiffHasSemanticChanges(semanticDiff) {
+		t.Fatal("dependency change was ignored as line-ending-only drift")
+	}
+}
+
+func TestAnalyzeIgnoresLocalReplacePolicy(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", `module example.com/app
 
@@ -1089,42 +935,19 @@ go 1.25
 
 replace example.com/lib => ../scratch/lib
 `)
-	writeFile(t, root, "main.go", `package main
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
 
-func main() {}
-`)
-
-	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true, CheckModuleHygiene: true})
+	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true})
 	if err != nil {
 		t.Fatalf("Analyze() error = %v", err)
 	}
-	assertFinding(t, report, FindingLocalReplace, "example.com/lib")
-}
-
-func TestAnalyzeAllowsKnownSiblingLocalReplace(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, root, "app/go.mod", `module example.com/app
-
-go 1.25
-
-replace example.com/lib => ../lib
-`)
-	writeFile(t, root, "app/main.go", `package main
-
-func main() {}
-`)
-	writeFile(t, root, "lib/go.mod", `module example.com/lib
-
-go 1.25
-`)
-	writeFile(t, root, "lib/lib.go", `package lib
-`)
-
-	report, err := Analyze(Options{Root: root, IncludeTests: true, IncludeGenerated: true, CheckModuleHygiene: true})
-	if err != nil {
-		t.Fatalf("Analyze() error = %v", err)
+	for _, module := range report.Modules {
+		for _, finding := range module.Findings {
+			if finding.Type == "local-replace" {
+				t.Fatalf("unexpected removed local-replace finding: %#v", finding)
+			}
+		}
 	}
-	assertNoFinding(t, report, FindingLocalReplace, "example.com/lib")
 }
 
 func TestAnalyzeTreatsGoToolDirectiveAsUsedDependency(t *testing.T) {
@@ -1234,24 +1057,6 @@ func assertNoSymbolFinding(t *testing.T, report *Report, findingType string, sym
 			}
 		}
 	}
-}
-
-func parseFunctionForComplexityTest(t *testing.T, source string) *ast.FuncDecl {
-	t.Helper()
-
-	file, err := parser.ParseFile(token.NewFileSet(), "complexity.go", "package main\n\n"+source, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("ParseFile() error = %v", err)
-	}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if ok {
-			return fn
-		}
-	}
-
-	t.Fatal("parsed source did not contain a function")
-	return nil
 }
 
 func writeFile(t *testing.T, root string, name string, content string) {

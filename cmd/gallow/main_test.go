@@ -46,6 +46,9 @@ type sarifTestResult struct {
 	RelatedLocations    []sarifTestRelated  `json:"relatedLocations"`
 	PartialFingerprints map[string]string   `json:"partialFingerprints"`
 	Fingerprints        map[string]string   `json:"fingerprints"`
+	Properties          struct {
+		Remediation *analyzer.Remediation `json:"remediation"`
+	} `json:"properties"`
 }
 
 type sarifTestLocation struct {
@@ -103,7 +106,7 @@ func TestFilterReportFilesKeepsDuplicateLocations(t *testing.T) {
 	}
 }
 
-func TestWriteCIFormats(t *testing.T) {
+func TestWriteSARIF(t *testing.T) {
 	report := &analyzer.Report{
 		Modules: []analyzer.ModuleReport{{
 			ModulePath: "example.com/app",
@@ -134,31 +137,6 @@ func TestWriteCIFormats(t *testing.T) {
 	}
 	if got := sarifOutput.Runs[0].Results[0].RuleID; got != analyzer.FindingUnusedFunction {
 		t.Fatalf("sarif ruleId = %q; want %q", got, analyzer.FindingUnusedFunction)
-	}
-
-	var codeQuality bytes.Buffer
-	if err := writeCodeClimate(&codeQuality, report); err != nil {
-		t.Fatalf("writeCodeClimate() error = %v", err)
-	}
-	var issues []struct {
-		CheckName string `json:"check_name"`
-		Location  struct {
-			Path string `json:"path"`
-		} `json:"location"`
-	}
-	if err := json.Unmarshal(codeQuality.Bytes(), &issues); err != nil {
-		t.Fatalf("code quality unmarshal error = %v", err)
-	}
-	if len(issues) != 1 || issues[0].CheckName != analyzer.FindingUnusedFunction || issues[0].Location.Path != "main.go" {
-		t.Fatalf("code quality issues = %#v; want unused-function for main.go", issues)
-	}
-
-	var annotations bytes.Buffer
-	if err := writeAnnotations(&annotations, report); err != nil {
-		t.Fatalf("writeAnnotations() error = %v", err)
-	}
-	if got := annotations.String(); !strings.Contains(got, "::warning file=main.go,line=4::unused-function: Dead") {
-		t.Fatalf("annotations = %q; want warning for unused function", got)
 	}
 }
 
@@ -265,6 +243,9 @@ func assertSARIFUnusedResult(t *testing.T, unused sarifTestResult, unusedRuleInd
 	if unused.PartialFingerprints[sarifFingerprintKey] != "unused123" || unused.Fingerprints[sarifFingerprintKey] != "unused123" {
 		t.Fatalf("unused fingerprints = %#v/%#v; want stable Gallow fingerprints", unused.PartialFingerprints, unused.Fingerprints)
 	}
+	if unused.Properties.Remediation == nil || unused.Properties.Remediation.Preferred != "remove" {
+		t.Fatalf("unused remediation = %#v; want removal-first metadata", unused.Properties.Remediation)
+	}
 }
 
 func assertSARIFDuplicateResult(t *testing.T, duplicate sarifTestResult, duplicateRuleIndex int) {
@@ -281,5 +262,31 @@ func assertSARIFDuplicateResult(t *testing.T, duplicate sarifTestResult, duplica
 	}
 	if len(duplicate.RelatedLocations) != 2 || duplicate.RelatedLocations[0].ID != relatedLocationStart {
 		t.Fatalf("duplicate related locations = %#v; want duplicate spans", duplicate.RelatedLocations)
+	}
+}
+
+func TestRemovedOptionsReturnMigrationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "coverage", args: []string{"--coverage", "coverage.out"}, want: `option "--coverage" was removed`},
+		{name: "complexity", args: []string{"--max-cyclomatic=20"}, want: `option "--max-cyclomatic" was removed`},
+		{name: "output format", args: []string{"--format", "codeclimate"}, want: `format "codeclimate" was removed`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			_, _, code, ok := parseRunOptions(tt.args, &stdout, &stderr)
+			if ok || code != exitError {
+				t.Fatalf("parseRunOptions() = code %d, ok %v; want error", code, ok)
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("stderr = %q; want %q", stderr.String(), tt.want)
+			}
+		})
 	}
 }

@@ -30,7 +30,6 @@ type Config struct {
 	IgnoreFindings  []FindingMatcher  `json:"ignoreFindings"`
 	Workspace       []string          `json:"workspace"`
 	BuildTags       []string          `json:"buildTags"`
-	Health          Health            `json:"health"`
 }
 
 type FindingMatcher struct {
@@ -45,11 +44,6 @@ type FindingMatcher struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-type Health struct {
-	MaxCyclomatic int `json:"maxCyclomatic"`
-	MaxCognitive  int `json:"maxCognitive"`
-}
-
 func Load(path string) (Config, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -57,6 +51,14 @@ func Load(path string) (Config, bool, error) {
 			return Config{}, false, nil
 		}
 		return Config{}, false, fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return Config{}, false, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if _, ok := fields["health"]; ok {
+		return Config{}, false, fmt.Errorf("parse config %s: setting %q was removed; remove maxCyclomatic/maxCognitive because Gallow no longer performs complexity analysis", path, "health")
 	}
 
 	var cfg Config
@@ -73,7 +75,16 @@ func Load(path string) (Config, bool, error) {
 }
 
 func (c Config) Validate() error {
+	switch c.Format {
+	case "codeclimate", "gitlab-codequality", "annotations":
+		return fmt.Errorf("format %q was removed; use %q for CI integrations or %q for a custom adapter", c.Format, "sarif", "json")
+	}
+
 	for rule, severity := range c.Rules {
+		switch rule {
+		case "complexity", "test-only-dependency", "local-replace":
+			return fmt.Errorf("rule %q was removed from Gallow's repository-entropy scope", rule)
+		}
 		switch severity {
 		case RuleOff, RuleWarn, RuleError:
 		default:

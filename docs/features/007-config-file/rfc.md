@@ -4,7 +4,7 @@ Status: Draft
 
 ## Summary
 
-Add a project configuration file for rule settings, ignore patterns, thresholds, and output defaults.
+Add a project configuration file for rule settings, ignore patterns, and output defaults.
 
 ## Problem
 
@@ -14,7 +14,7 @@ CLI flags are sufficient for one-off usage, but teams need repeatable project po
 
 - Discover `.gallowrc.json` from the project root by default.
 - Support `--config <path>` to load an explicit file.
-- Configure rule severity, ignore patterns, complexity thresholds, and output defaults.
+- Configure rule severity, ignore patterns, workspace/build contexts, and output defaults.
 - Validate unknown fields and invalid values with clear errors.
 - Document precedence between CLI flags and config values.
 
