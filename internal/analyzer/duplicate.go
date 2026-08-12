@@ -354,7 +354,7 @@ func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, 
 		end := i + options.MinTokens - 1
 		startLine := tokens[i].line
 		endLine := tokens[end].line
-		if endLine-startLine+1 < options.MinTokenLines || !duplicateWindowHasMeaningfulStatements(syntax, fset, startLine, endLine, options.MinStatements) {
+		if duplicateTokenLineCount(tokens[i:i+options.MinTokens]) < options.MinTokenLines || !duplicateWindowHasMeaningfulStatements(syntax, fset, startLine, endLine, options.MinStatements) {
 			continue
 		}
 
@@ -365,6 +365,19 @@ func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, 
 			endLine:   endLine,
 		})
 	}
+}
+
+func duplicateTokenLineCount(tokens []duplicateToken) int {
+	previousLine := -1
+	count := 0
+	for _, token := range tokens {
+		if token.line == previousLine {
+			continue
+		}
+		previousLine = token.line
+		count++
+	}
+	return count
 }
 
 func duplicateWindowHasMeaningfulStatements(syntax *ast.File, fset *token.FileSet, startLine, endLine, minimum int) bool {

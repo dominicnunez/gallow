@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestDuplicateTokenLineCountIgnoresBlankSourceLines(t *testing.T) {
+	tokens := []duplicateToken{
+		{value: "one", line: 1}, {value: "two", line: 1},
+		{value: "three", line: 7}, {value: "four", line: 7},
+		{value: "five", line: 14},
+	}
+	if got := duplicateTokenLineCount(tokens); got != 3 {
+		t.Fatalf("token-bearing lines = %d; want 3", got)
+	}
+}
+
 func TestAnalyzeIgnoresRepeatedSingleReturnGuards(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", `module example.com/app

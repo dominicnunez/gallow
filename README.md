@@ -62,7 +62,7 @@ Dependencies used only by tests are treated as used when tests are included. Loc
 
 ### Duplication entropy
 
-Gallow reports substantial repeated Go code with all related locations. By default it requires a larger repeated block (12 meaningful lines or 100 normalized tokens across 12 lines) and at least three substantive statements. Repeated single-return guard clauses—common Go error handling boilerplate—are not clone evidence.
+Gallow reports substantial repeated Go code with all related locations. By default it requires a larger repeated block (12 meaningful lines or 100 normalized tokens across at least 12 token-bearing lines) and at least three substantive statements. Repeated single-return guard clauses—common Go error handling boilerplate—are not clone evidence.
 
 Projects can tune the duplicate thresholds in `.gallowrc.json` when they deliberately want tighter reporting. The thresholds never accept values below the conservative safety floor: six lines, 50 tokens, eight token-lines, and one substantive statement.
 
