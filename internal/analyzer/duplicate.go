@@ -394,7 +394,13 @@ func meaningfulStatementSpans(syntax *ast.File, fset *token.FileSet) []meaningfu
 	spans := make([]meaningfulStatement, 0)
 	ast.Inspect(syntax, func(node ast.Node) bool {
 		statement, ok := node.(ast.Stmt)
-		if !ok || !isMeaningfulStatement(statement) {
+		if !ok {
+			return true
+		}
+		if guard, ok := statement.(*ast.IfStmt); ok && isSingleReturnGuard(guard) {
+			return false
+		}
+		if !isMeaningfulStatement(statement) {
 			return true
 		}
 		spans = append(spans, meaningfulStatement{
