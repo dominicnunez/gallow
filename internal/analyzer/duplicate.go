@@ -91,8 +91,9 @@ func duplicateFindings(module moduleState, options DuplicateOptions) []Finding {
 			if err != nil {
 				continue
 			}
-			collectDuplicateWindows(windows, source.relPath, string(data), source.file, source.fset, options)
-			collectTokenDuplicateWindows(windows, source.relPath, data, source.file, source.fset, options)
+			statements := meaningfulStatementSpans(source.file, source.fset)
+			collectDuplicateWindows(windows, source.relPath, string(data), statements, options)
+			collectTokenDuplicateWindows(windows, source.relPath, data, source.file, source.fset, statements, options)
 		}
 	}
 
@@ -239,7 +240,7 @@ func duplicatedLineCount(locations []duplicateWindow) int {
 	return (locations[0].endLine - locations[0].startLine + 1) * (len(locations) - 1)
 }
 
-func collectDuplicateWindows(windows map[string][]duplicateWindow, file string, content string, syntax *ast.File, fset *token.FileSet, options DuplicateOptions) {
+func collectDuplicateWindows(windows map[string][]duplicateWindow, file string, content string, statements []meaningfulStatement, options DuplicateOptions) {
 	lines := strings.Split(content, "\n")
 	normalized := make([]string, 0, len(lines))
 	lineNumbers := make([]int, 0, len(lines))
@@ -258,7 +259,7 @@ func collectDuplicateWindows(windows map[string][]duplicateWindow, file string, 
 	for i := 0; i <= len(normalized)-options.MinLines; i++ {
 		startLine := lineNumbers[i]
 		endLine := lineNumbers[i+options.MinLines-1]
-		if !duplicateWindowHasMeaningfulStatements(syntax, fset, startLine, endLine, options.MinStatements) {
+		if !duplicateWindowHasMeaningfulStatements(statements, startLine, endLine, options.MinStatements) {
 			continue
 		}
 		chunk := strings.Join(normalized[i:i+options.MinLines], "\n")
@@ -276,10 +277,10 @@ type duplicateToken struct {
 	line  int
 }
 
-func collectTokenDuplicateWindows(windows map[string][]duplicateWindow, file string, content []byte, syntax *ast.File, fset *token.FileSet, options DuplicateOptions) {
+func collectTokenDuplicateWindows(windows map[string][]duplicateWindow, file string, content []byte, syntax *ast.File, fset *token.FileSet, statements []meaningfulStatement, options DuplicateOptions) {
 	tokens := duplicateTokens(file, content)
 	for _, body := range functionBodyLineRanges(syntax, fset) {
-		collectTokenSequenceDuplicateWindows(windows, file, tokensInLineRange(tokens, body), syntax, fset, options)
+		collectTokenSequenceDuplicateWindows(windows, file, tokensInLineRange(tokens, body), statements, options)
 	}
 }
 
@@ -345,7 +346,7 @@ func tokensInLineRange(tokens []duplicateToken, lines duplicateWindow) []duplica
 	return filtered
 }
 
-func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, file string, tokens []duplicateToken, syntax *ast.File, fset *token.FileSet, options DuplicateOptions) {
+func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, file string, tokens []duplicateToken, statements []meaningfulStatement, options DuplicateOptions) {
 	if len(tokens) < options.MinTokens {
 		return
 	}
@@ -354,7 +355,7 @@ func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, 
 		end := i + options.MinTokens - 1
 		startLine := tokens[i].line
 		endLine := tokens[end].line
-		if duplicateTokenLineCount(tokens[i:i+options.MinTokens]) < options.MinTokenLines || !duplicateWindowHasMeaningfulStatements(syntax, fset, startLine, endLine, options.MinStatements) {
+		if duplicateTokenLineCount(tokens[i:i+options.MinTokens]) < options.MinTokenLines || !duplicateWindowHasMeaningfulStatements(statements, startLine, endLine, options.MinStatements) {
 			continue
 		}
 
@@ -380,38 +381,76 @@ func duplicateTokenLineCount(tokens []duplicateToken) int {
 	return count
 }
 
-func duplicateWindowHasMeaningfulStatements(syntax *ast.File, fset *token.FileSet, startLine, endLine, minimum int) bool {
-	if syntax == nil || fset == nil || minimum < 1 {
-		return false
-	}
-	count := 0
-	ast.Inspect(syntax, func(node ast.Node) bool {
-		statement, ok := node.(ast.Stmt)
-		if !ok || !statementWithinLines(statement, fset, startLine, endLine) {
-			return true
-		}
-		if guard, ok := statement.(*ast.IfStmt); ok && isSingleReturnGuard(guard) {
-			return false
-		}
-		switch statement := statement.(type) {
-		case *ast.AssignStmt, *ast.IncDecStmt, *ast.SendStmt, *ast.GoStmt, *ast.RangeStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt:
-			count++
-		case *ast.IfStmt:
-			count++
-		case *ast.ExprStmt:
-			if _, ok := statement.X.(*ast.CallExpr); ok {
-				count++
-			}
-		}
-		return count < minimum
-	})
-	return count >= minimum
+type meaningfulStatement struct {
+	startLine int
+	endLine   int
 }
 
-func statementWithinLines(statement ast.Stmt, fset *token.FileSet, startLine, endLine int) bool {
-	start := fset.Position(statement.Pos()).Line
-	end := fset.Position(statement.End()).Line
-	return start >= startLine && end <= endLine
+func meaningfulStatementSpans(syntax *ast.File, fset *token.FileSet) []meaningfulStatement {
+	if syntax == nil || fset == nil {
+		return nil
+	}
+
+	spans := make([]meaningfulStatement, 0)
+	ast.Inspect(syntax, func(node ast.Node) bool {
+		statement, ok := node.(ast.Stmt)
+		if !ok || !isMeaningfulStatement(statement) {
+			return true
+		}
+		spans = append(spans, meaningfulStatement{
+			startLine: fset.Position(statement.Pos()).Line,
+			endLine:   fset.Position(statement.End()).Line,
+		})
+		return true
+	})
+
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].startLine == spans[j].startLine {
+			return spans[i].endLine < spans[j].endLine
+		}
+		return spans[i].startLine < spans[j].startLine
+	})
+	return spans
+}
+
+func isMeaningfulStatement(statement ast.Stmt) bool {
+	if guard, ok := statement.(*ast.IfStmt); ok && isSingleReturnGuard(guard) {
+		return false
+	}
+
+	switch statement := statement.(type) {
+	case *ast.AssignStmt, *ast.IncDecStmt, *ast.SendStmt, *ast.GoStmt, *ast.RangeStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt, *ast.IfStmt:
+		return true
+	case *ast.ExprStmt:
+		_, ok := statement.X.(*ast.CallExpr)
+		return ok
+	default:
+		return false
+	}
+}
+
+func duplicateWindowHasMeaningfulStatements(statements []meaningfulStatement, startLine, endLine, minimum int) bool {
+	if minimum < 1 {
+		return false
+	}
+
+	first := sort.Search(len(statements), func(index int) bool {
+		return statements[index].startLine >= startLine
+	})
+	count := 0
+	for _, statement := range statements[first:] {
+		if statement.startLine > endLine {
+			break
+		}
+		if statement.endLine > endLine {
+			continue
+		}
+		count++
+		if count >= minimum {
+			return true
+		}
+	}
+	return false
 }
 
 func isSingleReturnGuard(statement *ast.IfStmt) bool {
