@@ -62,11 +62,15 @@ Dependencies used only by tests are treated as used when tests are included. Loc
 
 ### Duplication entropy
 
-Gallow reports repeated Go code windows with all related locations. Its remediation order is:
+Gallow reports substantial repeated Go code with all related locations. By default it requires a larger repeated block (12 meaningful lines or 100 normalized tokens across at least 12 token-bearing lines) and at least three substantive statements. Repeated single-return guard clauses—common Go error handling boilerplate—are not clone evidence.
+
+Projects can tune the duplicate thresholds in `.gallowrc.json` when they deliberately want tighter reporting. The thresholds never accept values below the conservative safety floor: six lines, 50 tokens, eight token-lines, and one substantive statement.
+
+Its remediation order is:
 
 1. remove an obsolete or redundant copy;
 2. extract shared logic when both copies are required and should evolve together;
-3. narrowly suppress intentional local duplication.
+3. narrowly suppress intentional local duplication with a `gallow-ignore` comment that explains why the duplication is intentional.
 
 ## Removal-first remediation
 
@@ -115,6 +119,12 @@ Gallow reads `.gallowrc.json` from the selected root unless `--config` specifies
   "format": "human",
   "rules": {
     "duplicate-code": "warn"
+  },
+  "duplicateCode": {
+    "minLines": 12,
+    "minTokens": 100,
+    "minTokenLines": 12,
+    "minStatements": 3
   },
   "ignorePatterns": ["internal/generated/**"],
   "ignoreFindings": [

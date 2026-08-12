@@ -13,11 +13,58 @@ import (
 )
 
 const (
-	duplicateWindowLines   = 6
-	duplicateWindowTokens  = 50
-	duplicateTokenMinLines = 8
-	duplicateHashLength    = 12
+	defaultDuplicateWindowLines   = 12
+	defaultDuplicateWindowTokens  = 100
+	defaultDuplicateTokenMinLines = 12
+	defaultDuplicateMinStatements = 3
+
+	minimumDuplicateWindowLines   = 6
+	minimumDuplicateWindowTokens  = 50
+	minimumDuplicateTokenMinLines = 8
+	minimumDuplicateMinStatements = 1
+	duplicateHashLength           = 12
 )
+
+type DuplicateOptions struct {
+	MinLines      int
+	MinTokens     int
+	MinTokenLines int
+	MinStatements int
+}
+
+func (o DuplicateOptions) Validate() error {
+	for _, threshold := range []struct {
+		name, minimum string
+		value         int
+		minimumValue  int
+	}{
+		{name: "duplicate minimum lines", minimum: "6", value: o.MinLines, minimumValue: minimumDuplicateWindowLines},
+		{name: "duplicate minimum tokens", minimum: "50", value: o.MinTokens, minimumValue: minimumDuplicateWindowTokens},
+		{name: "duplicate minimum token lines", minimum: "8", value: o.MinTokenLines, minimumValue: minimumDuplicateTokenMinLines},
+		{name: "duplicate minimum statements", minimum: "1", value: o.MinStatements, minimumValue: minimumDuplicateMinStatements},
+	} {
+		if threshold.value != 0 && threshold.value < threshold.minimumValue {
+			return fmt.Errorf("%s must be zero or at least %s", threshold.name, threshold.minimum)
+		}
+	}
+	return nil
+}
+
+func (o DuplicateOptions) normalized() DuplicateOptions {
+	if o.MinLines == 0 {
+		o.MinLines = defaultDuplicateWindowLines
+	}
+	if o.MinTokens == 0 {
+		o.MinTokens = defaultDuplicateWindowTokens
+	}
+	if o.MinTokenLines == 0 {
+		o.MinTokenLines = defaultDuplicateTokenMinLines
+	}
+	if o.MinStatements == 0 {
+		o.MinStatements = defaultDuplicateMinStatements
+	}
+	return o
+}
 
 const (
 	duplicateLineKeyPrefix  = "line:"
@@ -35,7 +82,8 @@ type duplicateGroup struct {
 	locations []duplicateWindow
 }
 
-func duplicateFindings(module moduleState) []Finding {
+func duplicateFindings(module moduleState, options DuplicateOptions) []Finding {
+	options = options.normalized()
 	windows := make(map[string][]duplicateWindow)
 	for _, pkg := range module.packages {
 		for _, source := range pkg.files {
@@ -43,8 +91,9 @@ func duplicateFindings(module moduleState) []Finding {
 			if err != nil {
 				continue
 			}
-			collectDuplicateWindows(windows, source.relPath, string(data))
-			collectTokenDuplicateWindows(windows, source.relPath, data, source.file, source.fset)
+			statements := meaningfulStatementSpans(source.file, source.fset)
+			collectDuplicateWindows(windows, source.relPath, string(data), statements, options)
+			collectTokenDuplicateWindows(windows, source.relPath, data, source.file, source.fset, statements, options)
 		}
 	}
 
@@ -191,7 +240,7 @@ func duplicatedLineCount(locations []duplicateWindow) int {
 	return (locations[0].endLine - locations[0].startLine + 1) * (len(locations) - 1)
 }
 
-func collectDuplicateWindows(windows map[string][]duplicateWindow, file string, content string) {
+func collectDuplicateWindows(windows map[string][]duplicateWindow, file string, content string, statements []meaningfulStatement, options DuplicateOptions) {
 	lines := strings.Split(content, "\n")
 	normalized := make([]string, 0, len(lines))
 	lineNumbers := make([]int, 0, len(lines))
@@ -203,17 +252,22 @@ func collectDuplicateWindows(windows map[string][]duplicateWindow, file string, 
 		normalized = append(normalized, line)
 		lineNumbers = append(lineNumbers, i+1)
 	}
-	if len(normalized) < duplicateWindowLines {
+	if len(normalized) < options.MinLines {
 		return
 	}
 
-	for i := 0; i <= len(normalized)-duplicateWindowLines; i++ {
-		chunk := strings.Join(normalized[i:i+duplicateWindowLines], "\n")
+	for i := 0; i <= len(normalized)-options.MinLines; i++ {
+		startLine := lineNumbers[i]
+		endLine := lineNumbers[i+options.MinLines-1]
+		if !duplicateWindowHasMeaningfulStatements(statements, startLine, endLine, options.MinStatements) {
+			continue
+		}
+		chunk := strings.Join(normalized[i:i+options.MinLines], "\n")
 		key := duplicateKey(duplicateLineKeyPrefix + chunk)
 		windows[key] = append(windows[key], duplicateWindow{
 			file:      file,
-			startLine: lineNumbers[i],
-			endLine:   lineNumbers[i+duplicateWindowLines-1],
+			startLine: startLine,
+			endLine:   endLine,
 		})
 	}
 }
@@ -223,10 +277,10 @@ type duplicateToken struct {
 	line  int
 }
 
-func collectTokenDuplicateWindows(windows map[string][]duplicateWindow, file string, content []byte, syntax *ast.File, fset *token.FileSet) {
+func collectTokenDuplicateWindows(windows map[string][]duplicateWindow, file string, content []byte, syntax *ast.File, fset *token.FileSet, statements []meaningfulStatement, options DuplicateOptions) {
 	tokens := duplicateTokens(file, content)
 	for _, body := range functionBodyLineRanges(syntax, fset) {
-		collectTokenSequenceDuplicateWindows(windows, file, tokensInLineRange(tokens, body))
+		collectTokenSequenceDuplicateWindows(windows, file, tokensInLineRange(tokens, body), statements, options)
 	}
 }
 
@@ -292,26 +346,125 @@ func tokensInLineRange(tokens []duplicateToken, lines duplicateWindow) []duplica
 	return filtered
 }
 
-func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, file string, tokens []duplicateToken) {
-	if len(tokens) < duplicateWindowTokens {
+func collectTokenSequenceDuplicateWindows(windows map[string][]duplicateWindow, file string, tokens []duplicateToken, statements []meaningfulStatement, options DuplicateOptions) {
+	if len(tokens) < options.MinTokens {
 		return
 	}
 
-	for i := 0; i <= len(tokens)-duplicateWindowTokens; i++ {
-		end := i + duplicateWindowTokens - 1
+	for i := 0; i <= len(tokens)-options.MinTokens; i++ {
+		end := i + options.MinTokens - 1
 		startLine := tokens[i].line
 		endLine := tokens[end].line
-		if endLine-startLine+1 < duplicateTokenMinLines {
+		if duplicateTokenLineCount(tokens[i:i+options.MinTokens]) < options.MinTokenLines || !duplicateWindowHasMeaningfulStatements(statements, startLine, endLine, options.MinStatements) {
 			continue
 		}
 
-		key := duplicateKey(duplicateTokenKeyPrefix + duplicateTokenChunk(tokens[i:i+duplicateWindowTokens]))
+		key := duplicateKey(duplicateTokenKeyPrefix + duplicateTokenChunk(tokens[i:i+options.MinTokens]))
 		windows[key] = append(windows[key], duplicateWindow{
 			file:      file,
 			startLine: startLine,
 			endLine:   endLine,
 		})
 	}
+}
+
+func duplicateTokenLineCount(tokens []duplicateToken) int {
+	previousLine := -1
+	count := 0
+	for _, token := range tokens {
+		if token.line == previousLine {
+			continue
+		}
+		previousLine = token.line
+		count++
+	}
+	return count
+}
+
+type meaningfulStatement struct {
+	startLine int
+	endLine   int
+}
+
+func meaningfulStatementSpans(syntax *ast.File, fset *token.FileSet) []meaningfulStatement {
+	if syntax == nil || fset == nil {
+		return nil
+	}
+
+	spans := make([]meaningfulStatement, 0)
+	ast.Inspect(syntax, func(node ast.Node) bool {
+		statement, ok := node.(ast.Stmt)
+		if !ok {
+			return true
+		}
+		if guard, ok := statement.(*ast.IfStmt); ok && isSingleReturnGuard(guard) {
+			return false
+		}
+		if !isMeaningfulStatement(statement) {
+			return true
+		}
+		spans = append(spans, meaningfulStatement{
+			startLine: fset.Position(statement.Pos()).Line,
+			endLine:   fset.Position(statement.End()).Line,
+		})
+		return true
+	})
+
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].startLine == spans[j].startLine {
+			return spans[i].endLine < spans[j].endLine
+		}
+		return spans[i].startLine < spans[j].startLine
+	})
+	return spans
+}
+
+func isMeaningfulStatement(statement ast.Stmt) bool {
+	if guard, ok := statement.(*ast.IfStmt); ok && isSingleReturnGuard(guard) {
+		return false
+	}
+
+	switch statement := statement.(type) {
+	case *ast.AssignStmt, *ast.IncDecStmt, *ast.SendStmt, *ast.GoStmt, *ast.RangeStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt, *ast.IfStmt:
+		return true
+	case *ast.ExprStmt:
+		_, ok := statement.X.(*ast.CallExpr)
+		return ok
+	default:
+		return false
+	}
+}
+
+func duplicateWindowHasMeaningfulStatements(statements []meaningfulStatement, startLine, endLine, minimum int) bool {
+	if minimum < 1 {
+		return false
+	}
+
+	first := sort.Search(len(statements), func(index int) bool {
+		return statements[index].startLine >= startLine
+	})
+	count := 0
+	for _, statement := range statements[first:] {
+		if statement.startLine > endLine {
+			break
+		}
+		if statement.endLine > endLine {
+			continue
+		}
+		count++
+		if count >= minimum {
+			return true
+		}
+	}
+	return false
+}
+
+func isSingleReturnGuard(statement *ast.IfStmt) bool {
+	if statement.Else != nil || statement.Body == nil || len(statement.Body.List) != 1 {
+		return false
+	}
+	_, ok := statement.Body.List[0].(*ast.ReturnStmt)
+	return ok
 }
 
 func normalizeDuplicateToken(tok token.Token, previous token.Token) (string, bool) {
