@@ -57,6 +57,7 @@ type Options struct {
 	WorkspacePatterns  []string
 	BuildTags          []string
 	CheckModuleHygiene bool
+	DuplicateCode      DuplicateOptions
 }
 
 type FindingMatcher struct {
@@ -159,6 +160,9 @@ type moduleState struct {
 }
 
 func Analyze(opts Options) (*Report, error) {
+	if err := opts.DuplicateCode.Validate(); err != nil {
+		return nil, err
+	}
 	root := opts.Root
 	if root == "" {
 		root = "."
@@ -391,7 +395,7 @@ func analyzeModule(root string, modules []moduleState, moduleIndex int, opts Opt
 		}
 	}
 	findings = append(findings, deadCodeFindings(module)...)
-	findings = append(findings, duplicateFindings(module)...)
+	findings = append(findings, duplicateFindings(module, opts.DuplicateCode)...)
 	assignFingerprints(findings)
 	findings, suppressedByComment := applyCommentSuppressions(findings, module)
 	findings = filterFindings(findings, opts)

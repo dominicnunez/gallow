@@ -17,19 +17,45 @@ const (
 	RuleError = "error"
 )
 
+type DuplicateCodeConfig struct {
+	MinLines      int `json:"minLines"`
+	MinTokens     int `json:"minTokens"`
+	MinTokenLines int `json:"minTokenLines"`
+	MinStatements int `json:"minStatements"`
+}
+
+func (c DuplicateCodeConfig) Validate() error {
+	for _, threshold := range []struct {
+		name    string
+		value   int
+		minimum int
+	}{
+		{name: "duplicateCode.minLines", value: c.MinLines, minimum: 6},
+		{name: "duplicateCode.minTokens", value: c.MinTokens, minimum: 50},
+		{name: "duplicateCode.minTokenLines", value: c.MinTokenLines, minimum: 8},
+		{name: "duplicateCode.minStatements", value: c.MinStatements, minimum: 1},
+	} {
+		if threshold.value != 0 && threshold.value < threshold.minimum {
+			return fmt.Errorf("%s must be zero or at least %d", threshold.name, threshold.minimum)
+		}
+	}
+	return nil
+}
+
 type Config struct {
-	Root            string            `json:"root"`
-	Format          string            `json:"format"`
-	Production      *bool             `json:"production"`
-	AllRequires     *bool             `json:"allRequires"`
-	IgnoreGenerated *bool             `json:"ignoreGenerated"`
-	Summary         *bool             `json:"summary"`
-	FailOnIssues    *bool             `json:"failOnIssues"`
-	Rules           map[string]string `json:"rules"`
-	IgnorePatterns  []string          `json:"ignorePatterns"`
-	IgnoreFindings  []FindingMatcher  `json:"ignoreFindings"`
-	Workspace       []string          `json:"workspace"`
-	BuildTags       []string          `json:"buildTags"`
+	Root            string              `json:"root"`
+	Format          string              `json:"format"`
+	Production      *bool               `json:"production"`
+	AllRequires     *bool               `json:"allRequires"`
+	IgnoreGenerated *bool               `json:"ignoreGenerated"`
+	Summary         *bool               `json:"summary"`
+	FailOnIssues    *bool               `json:"failOnIssues"`
+	Rules           map[string]string   `json:"rules"`
+	IgnorePatterns  []string            `json:"ignorePatterns"`
+	IgnoreFindings  []FindingMatcher    `json:"ignoreFindings"`
+	Workspace       []string            `json:"workspace"`
+	BuildTags       []string            `json:"buildTags"`
+	DuplicateCode   DuplicateCodeConfig `json:"duplicateCode"`
 }
 
 type FindingMatcher struct {
@@ -89,6 +115,9 @@ func (c Config) Validate() error {
 		default:
 			return fmt.Errorf("rule %q has unsupported severity %q", rule, severity)
 		}
+	}
+	if err := c.DuplicateCode.Validate(); err != nil {
+		return err
 	}
 	for _, matcher := range c.IgnoreFindings {
 		if removedFindingType(matcher.Type) {

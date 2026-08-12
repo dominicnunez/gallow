@@ -20,6 +20,7 @@ func TestLoadConfig(t *testing.T) {
   "production": true,
   "workspace": ["example.com/app"],
   "buildTags": ["integration"],
+  "duplicateCode": {"minLines": 14, "minTokens": 120, "minTokenLines": 16, "minStatements": 4},
   "rules": {"unused-function": "off"},
   "ignorePatterns": ["internal/generated/**"],
   "ignoreFindings": [{"type": "duplicate-code", "file": "**/*_test.go"}]
@@ -46,6 +47,9 @@ func TestLoadConfig(t *testing.T) {
 	}
 	if len(cfg.BuildTags) != 1 || cfg.BuildTags[0] != "integration" {
 		t.Fatalf("BuildTags = %v; want [integration]", cfg.BuildTags)
+	}
+	if got := cfg.DuplicateCode; got.MinLines != 14 || got.MinTokens != 120 || got.MinTokenLines != 16 || got.MinStatements != 4 {
+		t.Fatalf("DuplicateCode = %#v; want configured thresholds", got)
 	}
 	if len(cfg.IgnoreFindings) != 1 || cfg.IgnoreFindings[0].Type != "duplicate-code" || cfg.IgnoreFindings[0].File != "**/*_test.go" {
 		t.Fatalf("IgnoreFindings = %#v; want duplicate-code test ignore", cfg.IgnoreFindings)
@@ -81,6 +85,17 @@ func TestLoadRejectsUnknownRuleSeverity(t *testing.T) {
 	_, _, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil; want error")
+	}
+}
+
+func TestLoadRejectsUnsafeDuplicateThreshold(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigFile)
+	writeConfigFile(t, path, `{"duplicateCode": {"minLines": 5}}`)
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "duplicateCode.minLines") {
+		t.Fatalf("Load() error = %v; want duplicate threshold validation", err)
 	}
 }
 

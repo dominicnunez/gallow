@@ -354,6 +354,10 @@ func analyzerOptions(opts cliOptions, cfg settings.Config) analyzer.Options {
 		WorkspacePatterns:  splitCSV(opts.workspaceCSV),
 		BuildTags:          splitCSV(opts.tagsCSV),
 		CheckModuleHygiene: true,
+		DuplicateCode: analyzer.DuplicateOptions{
+			MinLines: cfg.DuplicateCode.MinLines, MinTokens: cfg.DuplicateCode.MinTokens,
+			MinTokenLines: cfg.DuplicateCode.MinTokenLines, MinStatements: cfg.DuplicateCode.MinStatements,
+		},
 	}
 }
 
