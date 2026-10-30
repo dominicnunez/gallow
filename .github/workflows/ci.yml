@@ -7,11 +7,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["1.26.x", "1.27.3"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
       - run: go test ./...
       - run: go vet ./...
       - run: go run ./cmd/gallow --root . --summary --ci

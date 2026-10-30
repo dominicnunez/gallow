@@ -17,6 +17,11 @@ Gallow complements `go vet`, Staticcheck, `go mod tidy`, security scanners, and 
 
 ## Install
 
+Source builds require Go 1.26 or newer. The analysis dependency now reads
+compiler export data from Go 1.27; CI exercises Go 1.26 and the current stable
+Go 1.27.3. Earlier compiler support was dropped because the compatible
+`golang.org/x/tools` release requires Go 1.26.
+
 ```bash
 go install github.com/dominicnunez/gallow/cmd/gallow@latest
 ```
