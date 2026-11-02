@@ -203,15 +203,25 @@ func collectTypedUses(root string, pkg *packages.Package, usesByObject map[types
 		if obj == nil {
 			continue
 		}
-		usesByObject[obj] = append(usesByObject[obj], typedUseAt(root, pkg, ident.Pos()))
+		origin := typedUseOrigin(obj)
+		usesByObject[origin] = append(usesByObject[origin], typedUseAt(root, pkg, ident.Pos()))
 	}
 
 	for selector, selection := range pkg.TypesInfo.Selections {
 		if selection == nil || selection.Obj() == nil {
 			continue
 		}
-		usesByObject[selection.Obj()] = append(usesByObject[selection.Obj()], typedUseAt(root, pkg, selector.Sel.Pos()))
+		origin := typedUseOrigin(selection.Obj())
+		usesByObject[origin] = append(usesByObject[origin], typedUseAt(root, pkg, selector.Sel.Pos()))
 	}
+}
+
+// Instantiated generic fields have distinct objects but retain their declaration origin.
+func typedUseOrigin(obj types.Object) types.Object {
+	if field, ok := obj.(*types.Var); ok {
+		return field.Origin()
+	}
+	return obj
 }
 
 func markTypedDeclarations(module *moduleState, typedDecls map[declarationKey][]typedDeclaration, usesByObject map[types.Object][]codeUse, interfaceMethodUses map[types.Object]bool) {
