@@ -69,6 +69,8 @@ Dependencies used only by tests are treated as used when tests are included. Loc
 
 Gallow reports substantial repeated Go code with all related locations. By default it requires a larger repeated block (12 meaningful lines or 100 normalized tokens across at least 12 token-bearing lines) and at least three substantive statements. Repeated single-return guard clauses—common Go error handling boilerplate—are not clone evidence.
 
+Candidates with the same first source location use a deterministic content-key tie-breaker. Adding unrelated clones therefore preserves an existing finding's identity. Fingerprints still include source locations, so moving or editing a clone can change them. Correcting the former unstable tie ordering may change affected fingerprints once; review any refreshed exact exceptions or saved baselines.
+
 Projects can tune the duplicate thresholds in `.gallowrc.json` when they deliberately want tighter reporting. The thresholds never accept values below the conservative safety floor: six lines, 50 tokens, eight token-lines, and one substantive statement.
 
 Its remediation order is:
