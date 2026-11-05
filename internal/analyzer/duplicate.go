@@ -189,7 +189,12 @@ func coalesceDuplicateGroups(groups []duplicateGroup) []duplicateGroup {
 		left := groups[i].locations[0]
 		right := groups[j].locations[0]
 		if left.file == right.file {
-			return left.startLine < right.startLine
+			if left.startLine != right.startLine {
+				return left.startLine < right.startLine
+			}
+			// Equal-location candidates retain the same representative regardless
+			// of unrelated groups changing the sort's partitioning.
+			return groups[i].key < groups[j].key
 		}
 		return left.file < right.file
 	})
